@@ -1,0 +1,35 @@
+# Processing
+applet/
+application.linux*/
+application.macos*/
+application.windows*/
+
+# Java
+*.class
+*.war
+*.ear
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Build artifacts
+out/
+build/
+
+# Arduino
+*.elf
+*.hex
+*.bin
+
+# Eagle backup files
+*.b#*
+*.s#*
