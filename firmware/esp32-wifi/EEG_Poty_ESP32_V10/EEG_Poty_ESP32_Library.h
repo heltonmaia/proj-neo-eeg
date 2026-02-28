@@ -13,10 +13,9 @@ insert header here
 #include <Adafruit_Sensor.h>
 #include "EEG_Poty_ESP32_Library_Definitions.h"
 
-// WiFi libraries (replacing Bluetooth)
+// WiFi libraries
 #include <WiFi.h>
 #include <WiFiUdp.h>
-#include <ESPmDNS.h>
 
 
 //void __USER_ISR ADS_DRDY_Service();
@@ -51,7 +50,6 @@ public:
     BOARD_MODE_ANALOG,
     BOARD_MODE_DIGITAL,
     BOARD_MODE_MARKER,
-    BOARD_MODE_BLE,
     BOARD_MODE_POTYPLEX,
     BOARD_MODE_END_OF_MODES  // This must be the last entry-insert any new board modes above this line
   };
@@ -97,15 +95,6 @@ public:
     boolean   rx;
     boolean   tx;
   } SpiInfo;
-
-  typedef struct {
-    uint8_t sampleNumber;
-    uint8_t data[BLE_TOTAL_DATA_BYTES];
-    boolean ready;
-    boolean flushing;
-    uint8_t bytesFlushed;
-    uint8_t bytesLoaded;
-  } BLE;
 
   Adafruit_MPU6050 mpu;
 
@@ -255,11 +244,8 @@ public:
   byte meanBoardDataRaw[OPENBCI_NUMBER_BYTES_PER_ADS_SAMPLE];
   byte meanDaisyDataRaw[OPENBCI_NUMBER_BYTES_PER_ADS_SAMPLE];
   byte sampleCounter;
-  byte sampleCounterBLE;
 
   int CountEven;
-  int ringBufBLEHead;
-  int ringBufBLETail;
   int boardChannelDataInt[OPENBCI_NUMBER_CHANNELS_PER_ADS_SAMPLE];    // array used when reading channel data as ints
   int daisyChannelDataInt[OPENBCI_NUMBER_CHANNELS_PER_ADS_SAMPLE];    // array used when reading channel data as ints
   int lastBoardChannelDataInt[OPENBCI_NUMBER_CHANNELS_PER_ADS_SAMPLE];
@@ -283,9 +269,6 @@ public:
   SAMPLE_RATE curSampleRate;
   TIME_SYNC_MODE curTimeSyncMode;
 
-  // Stucts
-  BLE bufferBLE[BLE_RING_BUFFER_SIZE];
-
   // STRUCTS
   SerialInfo iSerial;
 
@@ -301,8 +284,6 @@ private:
   int     getX(void);
   int     getY(void);
   int     getZ(void);
-  void    bufferBLEReset(void);
-  void    bufferBLEReset(BLE *);
   void    initialize(void);
   void    initialize_accel(byte);    // initialize
   void    initialize_ads(void);
@@ -334,7 +315,6 @@ private:
   void    RREGS(byte,byte,int);      // read multiple ADS registers
   void    SDATAC(void);  // get out of read data continuous mode
   void    sendChannelDataSerial(void);
-  void    sendChannelDataSerialBLE(PACKET_TYPE packetType);
   void    sendTimeWithAccelSerial(void);
   void    sendTimeWithRawAuxSerial(void);
   void    STANDBY(int); // go into low power mode

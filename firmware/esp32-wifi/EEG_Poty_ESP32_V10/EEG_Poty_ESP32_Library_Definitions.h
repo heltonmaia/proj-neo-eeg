@@ -45,9 +45,7 @@
 // FIRMWARE INFO
 //=============================================================================
 #define boardID "Prototype V1"
-//#define firmware "V0.8"         // <-- real version
-#define firmware "v9.8.8"         // <-- hacked version to be able to run OpenBCI_GUI
-#define bluetoothname "Potyplex EEG"  // kept for compatibility
+#define firmware "v1.0-wifi"      // WiFi AP version
 
 //specific for the MPU-6050
 #define MPU6050_addr 0x68 
@@ -448,12 +446,5 @@ const byte spi_RDATA = 0b00010010;   // Read data by command; supports multiple 
 
 #define OPENBCI_ADS_BYTES_PER_CHAN 3
 #define OPENBCI_ADS_CHANS_PER_BOARD 8
-
-/** BLE Packet Information */
-#define BLE_BYTES_PER_PACKET 20
-#define BLE_BYTES_PER_SAMPLE 6
-#define BLE_SAMPLES_PER_PACKET 3
-#define BLE_TOTAL_DATA_BYTES 18
-#define BLE_RING_BUFFER_SIZE 50
 
 #endif

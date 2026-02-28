@@ -1,46 +1,27 @@
 /*
-OpenBCI 32bit Library
-Place the containing folder into your libraries folder insdie the arduino folder in your Documents folder
+Potyplex EEG - WiFi Access Point Version
+Based on OpenBCI 32bit Library
+
+Modified by George Nascimento (2020) for ESP32
+WiFi version by Helton Maia (2024)
+
+Board: ESP32 Firebeetle
+Communication: WiFi UDP (Access Point mode)
+ADS1299 sample rate: 250Hz
+MPU6050 accel rate: 250Hz
+8 EEG channels, 24-bit resolution
 */
-
-/// Project Name---> EEG_Poty_ESP32_V9.inu
-
-/// This program was modified by George Nascimento, to run in an ESP32 firebee board
-/// Natal quarentine time 2020, Brazil
-///
-/// Fixed Parameters:
-///
-/// Board: ESP32 Firebeetle
-/// ADS1299 datasample:       250Hz
-/// MPU6050 accel datasample: 250Hz
-/// serial baudrate: 115200
-/// protocol: OpenBCI though serial port or bluetooth (serial emulated)
-///
-/// --> user arduino serial monitor, command 'v' to get bluetooth device name for pairing
-///
-///
-/// *********** To implement: ************
-/// 1 - Serial communication (BT & RS232) --> ok 09.09.2020 --> firmware "V0.4"
-/// 2 - ADS communication                 --> ok 05.10.2020 --> firmware "V0.5"
-/// 3 - Data ready interrupt              --> ok 11.10.2020 --> firmware "V0.6"
-/// 4 - Accelerometer MPU6050             --> ok 14.10.2020 --> firmware "V0.7"
-///
-/// 5 - Garbage removal
-/// 6 - Command to change the bluetooth device name on the fly
-/// 7 - Fix the bluetooth comunication on 115200 bauds
-/// 8 - Higher sample rate; ~500Hz?
-/// 9 - Use 2 cores in the ESP32          --> Testing       --> firmware "V0.8"
 
 
 
 
 
 #include "EEG_Poty_ESP32_Library.h"
-#include <ESPmDNS.h>
+#include "TestSignal.h"
 
 #define LED_BUILTIN 2
 
-// WiFi UDP objects (replacing BluetoothSerial)
+// WiFi UDP objects
 WiFiUDP udp;
 bool wifiConnected = false;
 
@@ -675,13 +656,12 @@ void OpenBCI_32bit_Library::boardReset(void)
 //  delay(500);
   configureLeadOffDetection(LOFF_MAG_6NA, LOFF_FREQ_31p2HZ);
   SerialPort.println();
-  SerialPort.println("Potyplex EEG 8 channels");
-  SerialPort.println("BlueToothName:" bluetoothname); 
+  SerialPort.println("Potyplex EEG 8 channels (WiFi)");
   SerialPort.println("Board ID: " boardID);
   printAll("MPU6050 Device ID: 0x");
   printlnHex(MPU6050_getDeviceID());
   printAll("ADS1299 ID: 0x"); printlnHex(ADS_getDeviceID(ON_BOARD));
-  SerialPort.println("Firmware:" firmware); 
+  SerialPort.println("Firmware: " firmware); 
   
   sendEOT();
   delay(5);
@@ -792,13 +772,6 @@ void OpenBCI_32bit_Library::setBoardMode(uint8_t newBoardMode)
   case BOARD_MODE_MARKER:
     curAccelMode = ACCEL_MODE_OFF;
     break;
-    /*
-  case BOARD_MODE_BLE:
-    endSerial0();
-    beginSerial0(OPENBCI_BAUD_RATE_BLE);
-  default:
-    break;
-  */
   }
 
   delay(10);
@@ -849,8 +822,6 @@ const char *OpenBCI_32bit_Library::getBoardMode(void)
     return "digital";
   case BOARD_MODE_MARKER:
     return "marker";
-  case BOARD_MODE_BLE:
-    return "BLE";
   case BOARD_MODE_DEFAULT:
   default:
     return "default";
@@ -1148,15 +1119,12 @@ void OpenBCI_32bit_Library::initializeVariables(void)
   verbosity = false; // when verbosity is true, there will be Serial feedback
 
   // Nums
-  ringBufBLEHead = 0;
-  ringBufBLETail = 0;
   currentChannelSetting = 0;
   lastSampleTime = 0;
   numberOfIncomingSettingsProcessedChannel = 0;
   numberOfIncomingSettingsProcessedLeadOff = 0;
   sampleCounter = 0;
-  sampleCounterBLE = 0;
-  CountEven=0;
+  CountEven = 0;
   timeOfLastRead = 0;
   timeOfMultiByteMsgStart = 0;
 
@@ -1179,29 +1147,6 @@ void OpenBCI_32bit_Library::setSerialInfo(SerialInfo si, boolean rx, boolean tx,
   si.baudRate = baudRate;
   si.rx = rx;
   si.tx = tx;
-}
-
-/**
- * Reset all the ble buffers
- */
-void OpenBCI_32bit_Library::bufferBLEReset()
-{
-  for (uint8_t i = 0; i < BLE_RING_BUFFER_SIZE; i++)
-  {
-    bufferBLEReset(bufferBLE + i);
-  }
-}
-
-/**
- * Reset only the given BLE buffer
- * @param ble {BLE} - A BLE struct to be reset
- */
-void OpenBCI_32bit_Library::bufferBLEReset(BLE *ble)
-{
-  ble->bytesFlushed = 0;
-  ble->bytesLoaded = 0;
-  ble->ready = false;
-  ble->flushing = false;
 }
 
 void OpenBCI_32bit_Library::printAllRegisters()
@@ -1248,8 +1193,11 @@ void OpenBCI_32bit_Library::sendChannelData()
   {
     SampleAll[0] = 0xA0;
     SampleAll[1] = sampleCounter;
-    for (int i = 0;  i < 22; i++) SampleAll[i+2] = boardChannelDataRaw[i];  // 22 bytes
-    for (int i = 22; i < 24; i++) SampleAll[i+2] = 0;                       //  2 bytes
+
+    // Inject test signal if enabled (replaces data on configured channel)
+    testSignal.injectIntoBuffer(boardChannelDataRaw);
+
+    for (int i = 0; i < 24; i++) SampleAll[i+2] = boardChannelDataRaw[i];  // 8 channels x 3 bytes = 24 bytes
 
     for (int i = 0; i < 3; i++)
     {
@@ -2716,8 +2664,7 @@ void OpenBCI_32bit_Library::changeInputType(byte inputCode)
 void OpenBCI_32bit_Library::startADS(void) 
 {
   sampleCounter = 0;
-  CountEven=0;
-  sampleCounterBLE = 0;
+  CountEven = 0;
   firstDataPacket = true;
   RDATAC(); // enter Read Data Continuous mode
   delay(1);
@@ -2884,12 +2831,9 @@ void OpenBCI_32bit_Library::writeSerial(uint8_t c)
 
 void OpenBCI_32bit_Library::ADS_writeChannelData()
 {
-  for (int i = 0; i < 22; i++){
+  for (int i = 0; i < 24; i++) {  // 8 channels x 3 bytes = 24 bytes
     writeSerial(boardChannelDataRaw[i]);
-  }  
-  for (int i = 22; i < 24; i++){
-    writeSerial(0);
-  }  
+  }
 }
 
 
