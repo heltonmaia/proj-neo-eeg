@@ -26,7 +26,7 @@
 #define boardID "Prototype V1"
 //#define firmware "V0.8"         // <-- real version
 #define firmware "v9.8.8"         // <-- hacked version to be able to run OpenBCI_GUI
-#define bluetoothname "Potyplex EEG"
+#define bluetoothname "Potyplex EEG HM"
 
 //specific for the MPU-6050
 #define MPU6050_addr 0x68 
