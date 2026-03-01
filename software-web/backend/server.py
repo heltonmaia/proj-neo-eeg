@@ -12,26 +12,29 @@ import json
 import time
 from contextlib import asynccontextmanager
 from typing import Set, List
-from collections import deque
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 # Configuration
 ESP32_IP = "192.168.4.1"
-UDP_PORT = 12345
+ESP32_UDP_PORT = 12345
+LOCAL_UDP_PORT = 12346  # Fixed port for receiving
 SAMPLE_RATE = 250  # Hz
 BROADCAST_INTERVAL = 0.05  # 50ms = 20 batches/second
+HEARTBEAT_INTERVAL = 5.0  # Send keepalive every 5 seconds
 
 # Connected WebSocket clients
 clients: Set[WebSocket] = set()
 
 # Data buffer for batching
 data_buffer: List[dict] = []
-buffer_lock = asyncio.Lock()
 
 # UDP transport (global)
 udp_transport = None
+
+# Streaming state
+streaming_active = False
 
 # Statistics
 stats = {
@@ -40,7 +43,8 @@ stats = {
     "clients_connected": 0,
     "streaming": False,
     "last_sample_time": 0,
-    "queue_size": 0
+    "sample_rate": 0,
+    "heartbeats_sent": 0
 }
 
 
@@ -75,7 +79,7 @@ def parse_eeg_packet(data: bytes) -> dict | None:
         accel.append(raw)
 
     return {
-        "s": sample_num,  # Shortened keys for less bandwidth
+        "s": sample_num,
         "c": channels,
         "a": accel
     }
@@ -91,7 +95,8 @@ class EEGProtocol(asyncio.DatagramProtocol):
         self.transport = transport
         global udp_transport
         udp_transport = transport
-        print(f"[UDP] Ready on {transport.get_extra_info('sockname')}")
+        sockname = transport.get_extra_info('sockname')
+        print(f"[UDP] Listening on {sockname[0]}:{sockname[1]}")
 
     def datagram_received(self, data, addr):
         packet = parse_eeg_packet(data)
@@ -99,7 +104,6 @@ class EEGProtocol(asyncio.DatagramProtocol):
             stats["samples_received"] += 1
             stats["streaming"] = True
             stats["last_sample_time"] = time.time()
-            # Add to buffer (no await needed, just append)
             data_buffer.append(packet)
 
     def error_received(self, exc):
@@ -114,15 +118,12 @@ async def broadcast_worker():
         try:
             await asyncio.sleep(BROADCAST_INTERVAL)
 
-            # Skip if no clients or no data
             if not clients or not data_buffer:
                 continue
 
-            # Swap buffer (fast, non-blocking)
+            # Swap buffer
             batch = data_buffer
             data_buffer = []
-
-            stats["queue_size"] = len(batch)
 
             # Create batch message
             message = json.dumps({"type": "batch", "samples": batch})
@@ -135,7 +136,6 @@ async def broadcast_worker():
                 except Exception:
                     disconnected.add(client)
 
-            # Remove disconnected clients
             for client in disconnected:
                 clients.discard(client)
                 stats["clients_connected"] = len(clients)
@@ -147,52 +147,82 @@ async def broadcast_worker():
             await asyncio.sleep(0.1)
 
 
-async def stats_printer():
-    """Print statistics periodically."""
-    last_samples = 0
-    last_batches = 0
+async def heartbeat_worker():
+    """Send periodic keepalive to ESP32 to prevent timeout."""
+    global streaming_active
+
     while True:
-        await asyncio.sleep(5)
+        try:
+            await asyncio.sleep(HEARTBEAT_INTERVAL)
+
+            # Only send heartbeat if streaming is active and we have clients
+            if streaming_active and clients and udp_transport:
+                udp_transport.sendto(b'b', (ESP32_IP, ESP32_UDP_PORT))
+                stats["heartbeats_sent"] += 1
+
+        except Exception as e:
+            print(f"[Heartbeat] Error: {e}")
+
+
+async def stats_worker():
+    """Calculate and print statistics."""
+    last_samples = 0
+    last_time = time.time()
+
+    while True:
+        await asyncio.sleep(2)
+
         current_samples = stats["samples_received"]
-        current_batches = stats["batches_sent"]
-        sample_rate = (current_samples - last_samples) / 5
-        batch_rate = (current_batches - last_batches) / 5
+        current_time = time.time()
+        elapsed = current_time - last_time
+
+        if elapsed > 0:
+            rate = (current_samples - last_samples) / elapsed
+            stats["sample_rate"] = round(rate)
+
         last_samples = current_samples
-        last_batches = current_batches
-        print(f"[STATS] Samples: {current_samples} ({sample_rate:.0f}/s), "
-              f"Batches: {current_batches} ({batch_rate:.0f}/s), "
-              f"Clients: {stats['clients_connected']}")
+        last_time = current_time
+
+        # Log stats
+        print(f"[STATS] Rate: {stats['sample_rate']}/s, "
+              f"Samples: {stats['samples_received']}, "
+              f"Batches: {stats['batches_sent']}, "
+              f"Clients: {stats['clients_connected']}, "
+              f"Heartbeats: {stats['heartbeats_sent']}")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown events."""
-    print("=" * 50)
+    print("=" * 60)
     print("  Potyplex EEG - FastAPI Backend")
-    print("=" * 50)
-    print(f"  ESP32 IP:    {ESP32_IP}")
-    print(f"  UDP Port:    {UDP_PORT}")
+    print("=" * 60)
+    print(f"  ESP32:       {ESP32_IP}:{ESP32_UDP_PORT}")
+    print(f"  Local UDP:   0.0.0.0:{LOCAL_UDP_PORT}")
     print(f"  Batch Rate:  {1/BROADCAST_INTERVAL:.0f} Hz")
+    print(f"  Heartbeat:   every {HEARTBEAT_INTERVAL}s")
     print(f"  API:         http://localhost:8000")
     print(f"  WebSocket:   ws://localhost:8000/ws")
-    print("=" * 50)
+    print("=" * 60)
 
     loop = asyncio.get_event_loop()
 
-    # Create UDP endpoint
+    # Create UDP endpoint on fixed port
     transport, protocol = await loop.create_datagram_endpoint(
         lambda: EEGProtocol(),
-        local_addr=('0.0.0.0', 0)
+        local_addr=('0.0.0.0', LOCAL_UDP_PORT)
     )
 
     # Start background tasks
     broadcast_task = asyncio.create_task(broadcast_worker())
-    stats_task = asyncio.create_task(stats_printer())
+    heartbeat_task = asyncio.create_task(heartbeat_worker())
+    stats_task = asyncio.create_task(stats_worker())
 
     yield
 
     # Cleanup
     broadcast_task.cancel()
+    heartbeat_task.cancel()
     stats_task.cancel()
     transport.close()
 
@@ -215,7 +245,6 @@ app.add_middleware(
 
 @app.get("/")
 async def root():
-    """API info."""
     return {
         "name": "Potyplex EEG API",
         "version": "1.0.0",
@@ -226,32 +255,35 @@ async def root():
 
 @app.get("/stats")
 async def get_stats():
-    """Get current statistics."""
     return stats
 
 
 @app.post("/start")
 async def start_streaming():
-    """Send start command to ESP32."""
+    global streaming_active
     if udp_transport:
-        udp_transport.sendto(b'b', (ESP32_IP, UDP_PORT))
-        return {"status": "ok", "message": "Start command sent"}
+        udp_transport.sendto(b'b', (ESP32_IP, ESP32_UDP_PORT))
+        streaming_active = True
+        stats["streaming"] = True
+        return {"status": "ok", "message": "Streaming started"}
     return {"status": "error", "message": "UDP not ready"}
 
 
 @app.post("/stop")
 async def stop_streaming():
-    """Send stop command to ESP32."""
+    global streaming_active
     if udp_transport:
-        udp_transport.sendto(b's', (ESP32_IP, UDP_PORT))
+        udp_transport.sendto(b's', (ESP32_IP, ESP32_UDP_PORT))
+        streaming_active = False
         stats["streaming"] = False
-        return {"status": "ok", "message": "Stop command sent"}
+        return {"status": "ok", "message": "Streaming stopped"}
     return {"status": "error", "message": "UDP not ready"}
 
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    """WebSocket endpoint for real-time EEG data."""
+    global streaming_active
+
     await websocket.accept()
     clients.add(websocket)
     stats["clients_connected"] = len(clients)
@@ -273,22 +305,24 @@ async def websocket_endpoint(websocket: WebSocket):
     try:
         while True:
             try:
-                # Wait for messages with timeout
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=30)
                 cmd = json.loads(data)
 
                 if cmd.get("action") == "start":
                     if udp_transport:
-                        udp_transport.sendto(b'b', (ESP32_IP, UDP_PORT))
+                        udp_transport.sendto(b'b', (ESP32_IP, ESP32_UDP_PORT))
+                        streaming_active = True
+                        stats["streaming"] = True
                         await websocket.send_json({"type": "status", "streaming": True})
 
                 elif cmd.get("action") == "stop":
                     if udp_transport:
-                        udp_transport.sendto(b's', (ESP32_IP, UDP_PORT))
+                        udp_transport.sendto(b's', (ESP32_IP, ESP32_UDP_PORT))
+                        streaming_active = False
+                        stats["streaming"] = False
                         await websocket.send_json({"type": "status", "streaming": False})
 
             except asyncio.TimeoutError:
-                # Send ping to keep connection alive
                 try:
                     await websocket.send_json({"type": "ping"})
                 except Exception:
@@ -302,6 +336,10 @@ async def websocket_endpoint(websocket: WebSocket):
         clients.discard(websocket)
         stats["clients_connected"] = len(clients)
         print(f"[WS] Client disconnected: {client_ip} (total: {len(clients)})")
+
+        # Stop streaming if no more clients
+        if not clients:
+            streaming_active = False
 
 
 if __name__ == "__main__":
