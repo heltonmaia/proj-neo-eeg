@@ -9,9 +9,10 @@ Usage:
 
 import asyncio
 import json
-import socket
+import time
 from contextlib import asynccontextmanager
 from typing import Set
+from collections import deque
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,15 +25,19 @@ SAMPLE_RATE = 250  # Hz
 # Connected WebSocket clients
 clients: Set[WebSocket] = set()
 
-# UDP socket (global)
-udp_socket = None
+# Data queue for broadcasting
+data_queue: deque = deque(maxlen=1000)
+
+# UDP transport (global)
+udp_transport = None
 
 # Statistics
 stats = {
     "samples_received": 0,
     "packets_sent": 0,
     "clients_connected": 0,
-    "streaming": False
+    "streaming": False,
+    "last_sample_time": 0
 }
 
 
@@ -73,73 +78,72 @@ def parse_eeg_packet(data: bytes) -> dict | None:
     }
 
 
-async def broadcast_to_clients(message: str):
-    """Send message to all connected WebSocket clients."""
-    if not clients:
-        return
+class EEGProtocol(asyncio.DatagramProtocol):
+    """UDP Protocol for receiving EEG data."""
 
-    disconnected = set()
-    for client in clients:
-        try:
-            await client.send_text(message)
-        except Exception:
-            disconnected.add(client)
+    def __init__(self):
+        self.transport = None
 
-    for client in disconnected:
-        clients.discard(client)
-        stats["clients_connected"] = len(clients)
+    def connection_made(self, transport):
+        self.transport = transport
+        global udp_transport
+        udp_transport = transport
+        print(f"[UDP] Ready on {transport.get_extra_info('sockname')}")
 
-
-async def udp_receiver():
-    """Receive UDP packets from ESP32 and broadcast to WebSocket clients."""
-    global udp_socket
-
-    udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    udp_socket.setblocking(False)
-    udp_socket.bind(('0.0.0.0', 0))
-
-    print(f"[UDP] Bound to port {udp_socket.getsockname()[1]}")
-    print(f"[UDP] Ready to receive from {ESP32_IP}:{UDP_PORT}")
-
-    loop = asyncio.get_event_loop()
-
-    while True:
-        try:
-            try:
-                data, addr = await asyncio.wait_for(
-                    loop.run_in_executor(None, lambda: udp_socket.recvfrom(64)),
-                    timeout=0.1
-                )
-            except asyncio.TimeoutError:
-                await asyncio.sleep(0.001)
-                continue
-
-            packet = parse_eeg_packet(data)
-            if packet is None:
-                continue
-
+    def datagram_received(self, data, addr):
+        packet = parse_eeg_packet(data)
+        if packet:
             stats["samples_received"] += 1
             stats["streaming"] = True
+            stats["last_sample_time"] = time.time()
+            data_queue.append(packet)
 
-            if clients:
-                message = json.dumps(packet)
-                await broadcast_to_clients(message)
-                stats["packets_sent"] += 1
+    def error_received(self, exc):
+        print(f"[UDP] Error: {exc}")
+
+
+async def broadcast_worker():
+    """Worker that broadcasts data to WebSocket clients."""
+    while True:
+        try:
+            if data_queue and clients:
+                # Process all queued data
+                while data_queue:
+                    packet = data_queue.popleft()
+                    message = json.dumps(packet)
+
+                    # Send to all clients
+                    disconnected = set()
+                    for client in clients.copy():
+                        try:
+                            await client.send_text(message)
+                        except Exception:
+                            disconnected.add(client)
+
+                    # Remove disconnected clients
+                    for client in disconnected:
+                        clients.discard(client)
+                        stats["clients_connected"] = len(clients)
+
+                    stats["packets_sent"] += 1
+
+            await asyncio.sleep(0.001)  # Small delay to prevent busy loop
 
         except Exception as e:
-            if "BlockingIOError" not in str(e):
-                print(f"[UDP] Error: {e}")
-            await asyncio.sleep(0.01)
+            print(f"[Broadcast] Error: {e}")
+            await asyncio.sleep(0.1)
 
 
 async def stats_printer():
     """Print statistics periodically."""
+    last_samples = 0
     while True:
-        await asyncio.sleep(10)
-        print(f"[STATS] Samples: {stats['samples_received']}, "
-              f"Sent: {stats['packets_sent']}, "
-              f"Clients: {stats['clients_connected']}")
+        await asyncio.sleep(5)
+        current = stats["samples_received"]
+        rate = (current - last_samples) / 5
+        last_samples = current
+        print(f"[STATS] Samples: {current}, Rate: {rate:.0f}/s, "
+              f"Sent: {stats['packets_sent']}, Clients: {stats['clients_connected']}")
 
 
 @asynccontextmanager
@@ -154,15 +158,24 @@ async def lifespan(app: FastAPI):
     print(f"  WebSocket:   ws://localhost:8000/ws")
     print("=" * 50)
 
-    udp_task = asyncio.create_task(udp_receiver())
+    loop = asyncio.get_event_loop()
+
+    # Create UDP endpoint
+    transport, protocol = await loop.create_datagram_endpoint(
+        lambda: EEGProtocol(),
+        local_addr=('0.0.0.0', 0)
+    )
+
+    # Start background tasks
+    broadcast_task = asyncio.create_task(broadcast_worker())
     stats_task = asyncio.create_task(stats_printer())
 
     yield
 
-    udp_task.cancel()
+    # Cleanup
+    broadcast_task.cancel()
     stats_task.cancel()
-    if udp_socket:
-        udp_socket.close()
+    transport.close()
 
 
 app = FastAPI(
@@ -201,20 +214,20 @@ async def get_stats():
 @app.post("/start")
 async def start_streaming():
     """Send start command to ESP32."""
-    if udp_socket:
-        udp_socket.sendto(b'b', (ESP32_IP, UDP_PORT))
+    if udp_transport:
+        udp_transport.sendto(b'b', (ESP32_IP, UDP_PORT))
         return {"status": "ok", "message": "Start command sent"}
-    return {"status": "error", "message": "UDP socket not ready"}
+    return {"status": "error", "message": "UDP not ready"}
 
 
 @app.post("/stop")
 async def stop_streaming():
     """Send stop command to ESP32."""
-    if udp_socket:
-        udp_socket.sendto(b's', (ESP32_IP, UDP_PORT))
+    if udp_transport:
+        udp_transport.sendto(b's', (ESP32_IP, UDP_PORT))
         stats["streaming"] = False
         return {"status": "ok", "message": "Stop command sent"}
-    return {"status": "error", "message": "UDP socket not ready"}
+    return {"status": "error", "message": "UDP not ready"}
 
 
 @app.websocket("/ws")
@@ -228,35 +241,35 @@ async def websocket_endpoint(websocket: WebSocket):
     print(f"[WS] Client connected: {client_ip} (total: {len(clients)})")
 
     # Send initial config
-    await websocket.send_json({
-        "type": "config",
-        "sample_rate": SAMPLE_RATE,
-        "channels": 8
-    })
+    try:
+        await websocket.send_json({
+            "type": "config",
+            "sample_rate": SAMPLE_RATE,
+            "channels": 8
+        })
+    except Exception:
+        clients.discard(websocket)
+        return
 
     try:
         while True:
-            # Wait for messages from client (non-blocking with short timeout)
             try:
-                data = await asyncio.wait_for(websocket.receive_text(), timeout=60)
+                # Wait for messages with timeout
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=30)
                 cmd = json.loads(data)
 
                 if cmd.get("action") == "start":
-                    if udp_socket:
-                        udp_socket.sendto(b'b', (ESP32_IP, UDP_PORT))
+                    if udp_transport:
+                        udp_transport.sendto(b'b', (ESP32_IP, UDP_PORT))
                         await websocket.send_json({"type": "status", "streaming": True})
 
                 elif cmd.get("action") == "stop":
-                    if udp_socket:
-                        udp_socket.sendto(b's', (ESP32_IP, UDP_PORT))
+                    if udp_transport:
+                        udp_transport.sendto(b's', (ESP32_IP, UDP_PORT))
                         await websocket.send_json({"type": "status", "streaming": False})
 
-                elif cmd.get("type") == "pong":
-                    # Client responded to ping
-                    pass
-
             except asyncio.TimeoutError:
-                # Send keepalive ping
+                # Send ping to keep connection alive
                 try:
                     await websocket.send_json({"type": "ping"})
                 except Exception:
