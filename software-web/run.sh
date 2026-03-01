@@ -142,15 +142,37 @@ setup_uv_env() {
     read -n 1 -s -r -p "Press any key to continue..."
 }
 
+# Known UV environment locations to check
+KNOWN_UV_PATHS=(
+    "/mnt/hd3/uv-common/uv-eeg/.venv"
+    "$SCRIPT_DIR/.venv"
+    "$PROJECT_ROOT/.venv"
+)
+
 # Check and setup environment
 check_environment() {
     load_config
 
-    # If UV_ENV is not set or doesn't exist, run setup
-    if [ -z "$UV_ENV" ] || [ ! -d "$UV_ENV" ]; then
-        setup_uv_env
-        load_config
+    # If UV_ENV is set and exists, we're good
+    if [ -n "$UV_ENV" ] && [ -d "$UV_ENV" ]; then
+        return 0
     fi
+
+    # Check known locations
+    for known_path in "${KNOWN_UV_PATHS[@]}"; do
+        if [ -d "$known_path" ]; then
+            UV_ENV="$known_path"
+            UV_CACHE="$(dirname "$known_path")/.uv-cache"
+            save_config
+            print_msg "Found existing environment: $UV_ENV"
+            sleep 1
+            return 0
+        fi
+    done
+
+    # No environment found, run setup
+    setup_uv_env
+    load_config
 }
 
 # Check if process is running
