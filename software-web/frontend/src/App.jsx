@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import EEGChart from './components/EEGChart'
+import RecordingsTab from './components/RecordingsTab'
 
 const WS_URL = 'ws://localhost:8000/ws'
 const API_URL = 'http://localhost:8000'
@@ -8,9 +9,13 @@ const UPDATE_INTERVAL = 50 // ms (20 FPS)
 const LOG_POLL_INTERVAL = 2000 // ms
 
 function App() {
+  const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark')
+  const [activeTab, setActiveTab] = useState('live')
   const [wsConnected, setWsConnected] = useState(false)
   const [streaming, setStreaming] = useState(false)
   const [receiving, setReceiving] = useState(false)
+  const [recording, setRecording] = useState(false)
+  const [recordingTime, setRecordingTime] = useState(0)
   const [config, setConfig] = useState({ sample_rate: 250, channels: 8 })
   const [stats, setStats] = useState({ samples: 0, rate: 0 })
   const [autoZoom, setAutoZoom] = useState(() =>
@@ -28,10 +33,21 @@ function App() {
   const [statusExpanded, setStatusExpanded] = useState(false)
 
   const wsRef = useRef(null)
+  const recordingTimerRef = useRef(null)
   const dataBufferRef = useRef(Array(8).fill(null).map(() => []))
   const sampleCountRef = useRef(0)
   const lastSampleCountRef = useRef(0)
   const reconnectTimeoutRef = useRef(null)
+
+  // Apply theme
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme)
+    localStorage.setItem('theme', theme)
+  }, [theme])
+
+  const toggleTheme = () => {
+    setTheme(prev => prev === 'dark' ? 'light' : 'dark')
+  }
 
   // Connect to WebSocket
   useEffect(() => {
@@ -190,6 +206,42 @@ function App() {
     setStats({ samples: 0, rate: 0 })
   }
 
+  const handleStartRecording = async () => {
+    try {
+      const res = await fetch(`${API_URL}/record/start`, { method: 'POST' })
+      if (res.ok) {
+        setRecording(true)
+        setRecordingTime(0)
+        recordingTimerRef.current = setInterval(() => {
+          setRecordingTime(prev => prev + 1)
+        }, 1000)
+      }
+    } catch (e) {
+      console.error('Failed to start recording:', e)
+    }
+  }
+
+  const handleStopRecording = async () => {
+    try {
+      const res = await fetch(`${API_URL}/record/stop`, { method: 'POST' })
+      if (res.ok) {
+        setRecording(false)
+        if (recordingTimerRef.current) {
+          clearInterval(recordingTimerRef.current)
+          recordingTimerRef.current = null
+        }
+      }
+    } catch (e) {
+      console.error('Failed to stop recording:', e)
+    }
+  }
+
+  const formatRecordingTime = (seconds) => {
+    const mins = Math.floor(seconds / 60)
+    const secs = seconds % 60
+    return `${mins}:${secs.toString().padStart(2, '0')}`
+  }
+
   const toggleChannel = (ch) => {
     setSelectedChannels(prev =>
       prev.includes(ch)
@@ -257,128 +309,171 @@ function App() {
         <div className="status-bar">
           <div className={`connection-status ${receiving ? 'connected' : wsConnected ? 'waiting' : 'disconnected'}`}>
             <span className="indicator" />
-            {receiving ? 'ESP32 Conectado' : wsConnected ? 'Aguardando ESP32' : 'Desconectado'}
+            {receiving ? 'ESP32 Connected' : wsConnected ? 'Waiting ESP32' : 'Disconnected'}
           </div>
           {streaming && receiving && <div className="live-badge">LIVE</div>}
+          {recording && <div className="rec-badge">REC {formatRecordingTime(recordingTime)}</div>}
+          <button className="theme-toggle" onClick={toggleTheme} title="Toggle theme">
+            {theme === 'dark' ? '☀️' : '🌙'}
+          </button>
         </div>
       </header>
 
-      <div className="controls">
-        <div className="buttons">
-          <button
-            onClick={handleStart}
-            disabled={!wsConnected || streaming}
-            className="btn btn-start"
-          >
-            ▶ Start
-          </button>
-          <button
-            onClick={handleStop}
-            disabled={!wsConnected || !streaming}
-            className="btn btn-stop"
-          >
-            ⬛ Stop
-          </button>
-          <button
-            onClick={handleClear}
-            className="btn btn-clear"
-          >
-            ✕ Clear
-          </button>
-        </div>
-
-        <div className="stats">
-          <span className="stat">
-            <label>Samples</label>
-            <value>{stats.samples.toLocaleString()}</value>
-          </span>
-          <span className="stat">
-            <label>Rate</label>
-            <value>{stats.rate} Hz</value>
-          </span>
-          <span className="stat">
-            <label>Target</label>
-            <value>{config.sample_rate} Hz</value>
-          </span>
-        </div>
-      </div>
-
-      <div className="channel-selector">
-        {Array(8).fill(null).map((_, i) => (
-          <label key={i} className={`channel-toggle ${selectedChannels.includes(i) ? 'active' : ''}`}>
-            <input
-              type="checkbox"
-              checked={selectedChannels.includes(i)}
-              onChange={() => toggleChannel(i)}
-            />
-            CH{i + 1}
-          </label>
-        ))}
-      </div>
-
-      {/* System Status Panel */}
-      <div className="status-panel">
-        <div
-          className="status-panel-header"
-          onClick={() => setStatusExpanded(!statusExpanded)}
+      {/* Tab navigation */}
+      <div className="tabs">
+        <button
+          className={`tab ${activeTab === 'live' ? 'active' : ''}`}
+          onClick={() => setActiveTab('live')}
         >
-          <h3>
-            <span>Status do Sistema</span>
-          </h3>
-          <span className={`toggle-icon ${statusExpanded ? 'expanded' : ''}`}>
-            {statusExpanded ? '▲' : '▼'}
-          </span>
-        </div>
-        <div className={`status-panel-content ${statusExpanded ? 'expanded' : ''}`}>
-          <div className="status-indicators">
-            <div className="status-indicator">
-              <span className={`dot ${wsConnected ? 'green' : 'red'}`}></span>
-              <span className="label">Backend:</span>
-              <span className="value">{wsConnected ? 'Conectado' : 'Desconectado'}</span>
-            </div>
-            <div className="status-indicator">
-              <span className={`dot ${receiving ? 'green' : streaming ? 'yellow' : 'gray'}`}></span>
-              <span className="label">ESP32:</span>
-              <span className="value">{receiving ? 'Recebendo' : streaming ? 'Aguardando' : 'Parado'}</span>
-            </div>
-            {serverStats && (
-              <div className="status-indicator">
-                <span className="label">Samples:</span>
-                <span className="value">{serverStats.samples_received?.toLocaleString()}</span>
-              </div>
-            )}
-          </div>
-          <div className="log-entries">
-            {systemLogs.length === 0 ? (
-              <div className="log-empty">Nenhum evento registrado</div>
-            ) : (
-              [...systemLogs].reverse().slice(0, 20).map((log, idx) => (
-                <div key={idx} className={`log-entry ${log.level}`}>
-                  <span className="log-time">{formatLogTime(log.time)}</span>
-                  <span className="log-event">{log.event}</span>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
+          Live
+        </button>
+        <button
+          className={`tab ${activeTab === 'recordings' ? 'active' : ''}`}
+          onClick={() => setActiveTab('recordings')}
+        >
+          Recordings
+        </button>
       </div>
 
-      <div className="charts-grid">
-        {selectedChannels.map(ch => (
-          <EEGChart
-            key={ch}
-            channelIndex={ch}
-            data={channelData[ch]}
-            streaming={streaming}
-            autoZoom={autoZoom[ch]}
-            zoomLevel={zoomLevel[ch]}
-            onToggleAutoZoom={() => toggleAutoZoom(ch)}
-            onZoomIn={() => zoomIn(ch)}
-            onZoomOut={() => zoomOut(ch)}
-            onResetZoom={() => resetZoom(ch)}
-          />
-        ))}
-      </div>
+      {activeTab === 'live' ? (
+        <>
+          <div className="controls">
+            <div className="buttons">
+              <button
+                onClick={handleStart}
+                disabled={!wsConnected || streaming}
+                className="btn btn-start"
+              >
+                ▶ Start
+              </button>
+              <button
+                onClick={handleStop}
+                disabled={!wsConnected || !streaming}
+                className="btn btn-stop"
+              >
+                ⬛ Stop
+              </button>
+              <button
+                onClick={handleClear}
+                className="btn btn-clear"
+              >
+                ✕ Clear
+              </button>
+              <div className="btn-separator" />
+              {!recording ? (
+                <button
+                  onClick={handleStartRecording}
+                  disabled={!receiving}
+                  className="btn btn-rec"
+                >
+                  ● REC
+                </button>
+              ) : (
+                <button
+                  onClick={handleStopRecording}
+                  className="btn btn-rec recording"
+                >
+                  ⬛ STOP ({formatRecordingTime(recordingTime)})
+                </button>
+              )}
+            </div>
+
+            <div className="stats">
+              <span className="stat">
+                <label>Samples</label>
+                <value>{stats.samples.toLocaleString()}</value>
+              </span>
+              <span className="stat">
+                <label>Rate</label>
+                <value>{stats.rate} Hz</value>
+              </span>
+              <span className="stat">
+                <label>Target</label>
+                <value>{config.sample_rate} Hz</value>
+              </span>
+            </div>
+          </div>
+
+          <div className="channel-selector">
+            {Array(8).fill(null).map((_, i) => (
+              <label key={i} className={`channel-toggle ${selectedChannels.includes(i) ? 'active' : ''}`}>
+                <input
+                  type="checkbox"
+                  checked={selectedChannels.includes(i)}
+                  onChange={() => toggleChannel(i)}
+                />
+                CH{i + 1}
+              </label>
+            ))}
+          </div>
+
+          {/* System Status Panel */}
+          <div className="status-panel">
+            <div
+              className="status-panel-header"
+              onClick={() => setStatusExpanded(!statusExpanded)}
+            >
+              <h3>
+                <span>System Status</span>
+              </h3>
+              <span className={`toggle-icon ${statusExpanded ? 'expanded' : ''}`}>
+                {statusExpanded ? '▲' : '▼'}
+              </span>
+            </div>
+            <div className={`status-panel-content ${statusExpanded ? 'expanded' : ''}`}>
+              <div className="status-indicators">
+                <div className="status-indicator">
+                  <span className={`dot ${wsConnected ? 'green' : 'red'}`}></span>
+                  <span className="label">Backend:</span>
+                  <span className="value">{wsConnected ? 'Connected' : 'Disconnected'}</span>
+                </div>
+                <div className="status-indicator">
+                  <span className={`dot ${receiving ? 'green' : streaming ? 'yellow' : 'gray'}`}></span>
+                  <span className="label">ESP32:</span>
+                  <span className="value">{receiving ? 'Receiving' : streaming ? 'Waiting' : 'Stopped'}</span>
+                </div>
+                {serverStats && (
+                  <div className="status-indicator">
+                    <span className="label">Samples:</span>
+                    <span className="value">{serverStats.samples_received?.toLocaleString()}</span>
+                  </div>
+                )}
+              </div>
+              <div className="log-entries">
+                {systemLogs.length === 0 ? (
+                  <div className="log-empty">No events recorded</div>
+                ) : (
+                  [...systemLogs].reverse().slice(0, 20).map((log, idx) => (
+                    <div key={idx} className={`log-entry ${log.level}`}>
+                      <span className="log-time">{formatLogTime(log.time)}</span>
+                      <span className="log-event">{log.event}</span>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="charts-grid">
+            {selectedChannels.map(ch => (
+              <EEGChart
+                key={ch}
+                channelIndex={ch}
+                data={channelData[ch]}
+                streaming={streaming}
+                autoZoom={autoZoom[ch]}
+                zoomLevel={zoomLevel[ch]}
+                onToggleAutoZoom={() => toggleAutoZoom(ch)}
+                onZoomIn={() => zoomIn(ch)}
+                onZoomOut={() => zoomOut(ch)}
+                onResetZoom={() => resetZoom(ch)}
+              />
+            ))}
+          </div>
+        </>
+      ) : (
+        <RecordingsTab />
+      )}
     </div>
   )
 }

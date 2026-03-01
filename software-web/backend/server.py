@@ -44,9 +44,12 @@ streaming_active = False
 recording_active = False
 recording_file: Optional[csv.writer] = None
 recording_handle = None
-recording_filename: Optional[str] = None
+recording_dir: Optional[Path] = None
+recording_session_id: Optional[str] = None
 recording_start_time: Optional[float] = None
+recording_metadata: dict = {}
 RECORDINGS_DIR = Path(__file__).parent / "recordings"
+FLUSH_INTERVAL = 250  # Flush to disk every 250 samples (1 second)
 
 # Statistics
 stats = {
@@ -150,6 +153,10 @@ class EEGProtocol(asyncio.DatagramProtocol):
                 ]
                 recording_file.writerow(row)
                 stats["recording_samples"] += 1
+
+                # Periodic flush to prevent data loss
+                if stats["recording_samples"] % FLUSH_INTERVAL == 0:
+                    recording_handle.flush()
 
             # Debug: log every 250 samples (once per second)
             if stats["samples_received"] % 250 == 0:
@@ -324,9 +331,10 @@ async def stop_streaming():
 
 
 @app.post("/record/start")
-async def start_recording():
-    """Start recording EEG data to CSV file."""
-    global recording_active, recording_file, recording_handle, recording_filename, recording_start_time
+async def start_recording(subject: str = "", notes: str = ""):
+    """Start recording EEG data to CSV file with metadata."""
+    global recording_active, recording_file, recording_handle, recording_dir
+    global recording_session_id, recording_start_time, recording_metadata
 
     if recording_active:
         return {"status": "error", "message": "Already recording"}
@@ -334,13 +342,15 @@ async def start_recording():
     # Create recordings directory
     RECORDINGS_DIR.mkdir(exist_ok=True)
 
-    # Generate filename with timestamp
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    recording_filename = f"eeg_recording_{timestamp}.csv"
-    filepath = RECORDINGS_DIR / recording_filename
+    # Generate session ID with timestamp
+    timestamp = datetime.now()
+    recording_session_id = timestamp.strftime("%Y%m%d_%H%M%S")
+    recording_dir = RECORDINGS_DIR / recording_session_id
+    recording_dir.mkdir(exist_ok=True)
 
-    # Open file and create CSV writer
-    recording_handle = open(filepath, 'w', newline='')
+    # Create CSV file
+    csv_path = recording_dir / "data.csv"
+    recording_handle = open(csv_path, 'w', newline='')
     recording_file = csv.writer(recording_handle)
 
     # Write header
@@ -351,24 +361,36 @@ async def start_recording():
         'accel_x', 'accel_y', 'accel_z'
     ])
 
+    # Initialize metadata
     recording_start_time = time.time()
+    recording_metadata = {
+        "session_id": recording_session_id,
+        "start_time": timestamp.isoformat(),
+        "sample_rate": SAMPLE_RATE,
+        "channels": 8,
+        "subject": subject,
+        "notes": notes,
+        "markers": []
+    }
+
     recording_active = True
     stats["recording"] = True
     stats["recording_samples"] = 0
-    stats["recording_file"] = recording_filename
+    stats["recording_file"] = recording_session_id
 
-    add_log(f"Recording started: {recording_filename}")
+    add_log(f"Recording started: {recording_session_id}")
     return {
         "status": "ok",
         "message": "Recording started",
-        "filename": recording_filename
+        "session_id": recording_session_id
     }
 
 
 @app.post("/record/stop")
 async def stop_recording():
-    """Stop recording and close the file."""
-    global recording_active, recording_file, recording_handle, recording_filename
+    """Stop recording and save metadata."""
+    global recording_active, recording_file, recording_handle, recording_dir
+    global recording_session_id, recording_metadata
 
     if not recording_active:
         return {"status": "error", "message": "Not recording"}
@@ -376,52 +398,193 @@ async def stop_recording():
     recording_active = False
     stats["recording"] = False
 
-    # Close file
+    # Close CSV file
     if recording_handle:
+        recording_handle.flush()
         recording_handle.close()
         recording_handle = None
         recording_file = None
 
+    # Update and save metadata
     duration = time.time() - recording_start_time
     samples = stats["recording_samples"]
 
-    add_log(f"Recording stopped: {recording_filename} ({samples} samples, {duration:.1f}s)")
+    recording_metadata["end_time"] = datetime.now().isoformat()
+    recording_metadata["duration_s"] = round(duration, 2)
+    recording_metadata["total_samples"] = samples
+
+    # Write metadata JSON
+    if recording_dir:
+        metadata_path = recording_dir / "metadata.json"
+        with open(metadata_path, 'w') as f:
+            json.dump(recording_metadata, f, indent=2)
+
+    session_id = recording_session_id
+    add_log(f"Recording stopped: {session_id} ({samples} samples, {duration:.1f}s)")
 
     return {
         "status": "ok",
         "message": "Recording stopped",
-        "filename": recording_filename,
+        "session_id": session_id,
         "samples": samples,
         "duration_s": round(duration, 2)
     }
 
 
+@app.post("/record/marker")
+async def add_marker(label: str = "marker"):
+    """Add a marker/annotation to the current recording."""
+    if not recording_active:
+        return {"status": "error", "message": "Not recording"}
+
+    elapsed = time.time() - recording_start_time
+    marker = {
+        "time_s": round(elapsed, 4),
+        "sample": stats["recording_samples"],
+        "label": label
+    }
+    recording_metadata["markers"].append(marker)
+
+    add_log(f"Marker added: {label} @ {elapsed:.2f}s")
+    return {"status": "ok", "marker": marker}
+
+
 @app.get("/recordings")
 async def list_recordings():
-    """List all recorded files."""
+    """List all recording sessions with metadata."""
     RECORDINGS_DIR.mkdir(exist_ok=True)
-    files = []
+    sessions = []
+
+    # Look for session directories (new format)
+    for d in sorted(RECORDINGS_DIR.iterdir(), reverse=True):
+        if d.is_dir():
+            metadata_path = d / "metadata.json"
+            if metadata_path.exists():
+                with open(metadata_path) as f:
+                    metadata = json.load(f)
+                csv_path = d / "data.csv"
+                size_kb = round(csv_path.stat().st_size / 1024, 1) if csv_path.exists() else 0
+                sessions.append({
+                    "session_id": d.name,
+                    "size_kb": size_kb,
+                    **metadata
+                })
+
+    # Also check for legacy CSV files (old format)
     for f in sorted(RECORDINGS_DIR.glob("*.csv"), reverse=True):
         stat = f.stat()
-        files.append({
+        sessions.append({
+            "session_id": f.stem,
             "filename": f.name,
             "size_kb": round(stat.st_size / 1024, 1),
-            "created": datetime.fromtimestamp(stat.st_mtime).isoformat()
+            "start_time": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+            "legacy": True
         })
-    return {"recordings": files}
+
+    return {"recordings": sessions}
 
 
-@app.get("/recordings/{filename}")
-async def download_recording(filename: str):
-    """Download a specific recording file."""
-    filepath = RECORDINGS_DIR / filename
-    if not filepath.exists():
-        return {"status": "error", "message": "File not found"}
-    return FileResponse(
-        filepath,
-        media_type="text/csv",
-        filename=filename
-    )
+@app.get("/recordings/{session_id}")
+async def get_recording(session_id: str):
+    """Get recording metadata and data."""
+    # Check new format (directory)
+    session_dir = RECORDINGS_DIR / session_id
+    if session_dir.is_dir():
+        metadata_path = session_dir / "metadata.json"
+        csv_path = session_dir / "data.csv"
+
+        if not metadata_path.exists():
+            return {"status": "error", "message": "Metadata not found"}
+
+        with open(metadata_path) as f:
+            metadata = json.load(f)
+
+        # Read CSV data
+        data = []
+        if csv_path.exists():
+            with open(csv_path, 'r') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    data.append({
+                        "sample": int(row['sample_index']),
+                        "time": float(row['time_s']),
+                        "channels": [
+                            float(row['ch1_uv']), float(row['ch2_uv']),
+                            float(row['ch3_uv']), float(row['ch4_uv']),
+                            float(row['ch5_uv']), float(row['ch6_uv']),
+                            float(row['ch7_uv']), float(row['ch8_uv'])
+                        ]
+                    })
+
+        return {
+            "status": "ok",
+            "metadata": metadata,
+            "data": data
+        }
+
+    # Check legacy format (single CSV file)
+    csv_path = RECORDINGS_DIR / f"{session_id}.csv"
+    if csv_path.exists():
+        data = []
+        with open(csv_path, 'r') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                data.append({
+                    "sample": int(row['sample_index']),
+                    "time": float(row['time_s']),
+                    "channels": [
+                        float(row['ch1_uv']), float(row['ch2_uv']),
+                        float(row['ch3_uv']), float(row['ch4_uv']),
+                        float(row['ch5_uv']), float(row['ch6_uv']),
+                        float(row['ch7_uv']), float(row['ch8_uv'])
+                    ]
+                })
+
+        return {
+            "status": "ok",
+            "metadata": {"session_id": session_id, "legacy": True},
+            "data": data
+        }
+
+    return {"status": "error", "message": "Recording not found"}
+
+
+@app.get("/recordings/{session_id}/download")
+async def download_recording(session_id: str):
+    """Download recording CSV file."""
+    # Check new format
+    csv_path = RECORDINGS_DIR / session_id / "data.csv"
+    if csv_path.exists():
+        return FileResponse(csv_path, media_type="text/csv", filename=f"{session_id}.csv")
+
+    # Check legacy format
+    csv_path = RECORDINGS_DIR / f"{session_id}.csv"
+    if csv_path.exists():
+        return FileResponse(csv_path, media_type="text/csv", filename=f"{session_id}.csv")
+
+    return {"status": "error", "message": "Recording not found"}
+
+
+@app.delete("/recordings/{session_id}")
+async def delete_recording(session_id: str):
+    """Delete a recording session."""
+    import shutil
+
+    # Check new format (directory)
+    session_dir = RECORDINGS_DIR / session_id
+    if session_dir.is_dir():
+        shutil.rmtree(session_dir)
+        add_log(f"Recording deleted: {session_id}")
+        return {"status": "ok", "message": "Recording deleted"}
+
+    # Check legacy format
+    csv_path = RECORDINGS_DIR / f"{session_id}.csv"
+    if csv_path.exists():
+        csv_path.unlink()
+        add_log(f"Recording deleted: {session_id}")
+        return {"status": "ok", "message": "Recording deleted"}
+
+    return {"status": "error", "message": "Recording not found"}
 
 
 @app.websocket("/ws")
