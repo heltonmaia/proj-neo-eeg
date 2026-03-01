@@ -68,15 +68,19 @@ function App() {
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: 'pong' }))
           }
-        } else if (data.channels) {
-          // EEG data - buffer it
-          sampleCountRef.current++
+        } else if (data.type === 'batch' && data.samples) {
+          // Batch of EEG samples
+          for (const sample of data.samples) {
+            sampleCountRef.current++
+            for (let i = 0; i < 8; i++) {
+              dataBufferRef.current[i].push({
+                x: sampleCountRef.current,
+                y: sample.c[i]  // 'c' = channels (shortened key)
+              })
+            }
+          }
+          // Trim buffers
           for (let i = 0; i < 8; i++) {
-            dataBufferRef.current[i].push({
-              x: sampleCountRef.current,
-              y: data.channels[i]
-            })
-            // Keep buffer size limited
             if (dataBufferRef.current[i].length > MAX_SAMPLES * 2) {
               dataBufferRef.current[i] = dataBufferRef.current[i].slice(-MAX_SAMPLES)
             }

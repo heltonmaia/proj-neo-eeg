@@ -11,7 +11,7 @@ import asyncio
 import json
 import time
 from contextlib import asynccontextmanager
-from typing import Set
+from typing import Set, List
 from collections import deque
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -21,12 +21,14 @@ from fastapi.middleware.cors import CORSMiddleware
 ESP32_IP = "192.168.4.1"
 UDP_PORT = 12345
 SAMPLE_RATE = 250  # Hz
+BROADCAST_INTERVAL = 0.05  # 50ms = 20 batches/second
 
 # Connected WebSocket clients
 clients: Set[WebSocket] = set()
 
-# Data queue for broadcasting
-data_queue: deque = deque(maxlen=1000)
+# Data buffer for batching
+data_buffer: List[dict] = []
+buffer_lock = asyncio.Lock()
 
 # UDP transport (global)
 udp_transport = None
@@ -34,10 +36,11 @@ udp_transport = None
 # Statistics
 stats = {
     "samples_received": 0,
-    "packets_sent": 0,
+    "batches_sent": 0,
     "clients_connected": 0,
     "streaming": False,
-    "last_sample_time": 0
+    "last_sample_time": 0,
+    "queue_size": 0
 }
 
 
@@ -72,9 +75,9 @@ def parse_eeg_packet(data: bytes) -> dict | None:
         accel.append(raw)
 
     return {
-        "sample": sample_num,
-        "channels": channels,
-        "accel": accel
+        "s": sample_num,  # Shortened keys for less bandwidth
+        "c": channels,
+        "a": accel
     }
 
 
@@ -96,38 +99,48 @@ class EEGProtocol(asyncio.DatagramProtocol):
             stats["samples_received"] += 1
             stats["streaming"] = True
             stats["last_sample_time"] = time.time()
-            data_queue.append(packet)
+            # Add to buffer (no await needed, just append)
+            data_buffer.append(packet)
 
     def error_received(self, exc):
         print(f"[UDP] Error: {exc}")
 
 
 async def broadcast_worker():
-    """Worker that broadcasts data to WebSocket clients."""
+    """Worker that broadcasts batched data to WebSocket clients at fixed intervals."""
+    global data_buffer
+
     while True:
         try:
-            if data_queue and clients:
-                # Process all queued data
-                while data_queue:
-                    packet = data_queue.popleft()
-                    message = json.dumps(packet)
+            await asyncio.sleep(BROADCAST_INTERVAL)
 
-                    # Send to all clients
-                    disconnected = set()
-                    for client in clients.copy():
-                        try:
-                            await client.send_text(message)
-                        except Exception:
-                            disconnected.add(client)
+            # Skip if no clients or no data
+            if not clients or not data_buffer:
+                continue
 
-                    # Remove disconnected clients
-                    for client in disconnected:
-                        clients.discard(client)
-                        stats["clients_connected"] = len(clients)
+            # Swap buffer (fast, non-blocking)
+            batch = data_buffer
+            data_buffer = []
 
-                    stats["packets_sent"] += 1
+            stats["queue_size"] = len(batch)
 
-            await asyncio.sleep(0.001)  # Small delay to prevent busy loop
+            # Create batch message
+            message = json.dumps({"type": "batch", "samples": batch})
+
+            # Send to all clients
+            disconnected = set()
+            for client in clients.copy():
+                try:
+                    await client.send_text(message)
+                except Exception:
+                    disconnected.add(client)
+
+            # Remove disconnected clients
+            for client in disconnected:
+                clients.discard(client)
+                stats["clients_connected"] = len(clients)
+
+            stats["batches_sent"] += 1
 
         except Exception as e:
             print(f"[Broadcast] Error: {e}")
@@ -137,13 +150,18 @@ async def broadcast_worker():
 async def stats_printer():
     """Print statistics periodically."""
     last_samples = 0
+    last_batches = 0
     while True:
         await asyncio.sleep(5)
-        current = stats["samples_received"]
-        rate = (current - last_samples) / 5
-        last_samples = current
-        print(f"[STATS] Samples: {current}, Rate: {rate:.0f}/s, "
-              f"Sent: {stats['packets_sent']}, Clients: {stats['clients_connected']}")
+        current_samples = stats["samples_received"]
+        current_batches = stats["batches_sent"]
+        sample_rate = (current_samples - last_samples) / 5
+        batch_rate = (current_batches - last_batches) / 5
+        last_samples = current_samples
+        last_batches = current_batches
+        print(f"[STATS] Samples: {current_samples} ({sample_rate:.0f}/s), "
+              f"Batches: {current_batches} ({batch_rate:.0f}/s), "
+              f"Clients: {stats['clients_connected']}")
 
 
 @asynccontextmanager
@@ -154,6 +172,7 @@ async def lifespan(app: FastAPI):
     print("=" * 50)
     print(f"  ESP32 IP:    {ESP32_IP}")
     print(f"  UDP Port:    {UDP_PORT}")
+    print(f"  Batch Rate:  {1/BROADCAST_INTERVAL:.0f} Hz")
     print(f"  API:         http://localhost:8000")
     print(f"  WebSocket:   ws://localhost:8000/ws")
     print("=" * 50)
