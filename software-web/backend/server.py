@@ -8,13 +8,18 @@ Usage:
 """
 
 import asyncio
+import csv
 import json
+import os
 import time
 from contextlib import asynccontextmanager
-from typing import Set, List
+from datetime import datetime
+from pathlib import Path
+from typing import Set, List, Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 
 # Configuration
 ESP32_IP = "192.168.4.1"
@@ -22,7 +27,6 @@ ESP32_UDP_PORT = 12345
 LOCAL_UDP_PORT = 12346  # Fixed port for receiving
 SAMPLE_RATE = 250  # Hz
 BROADCAST_INTERVAL = 0.05  # 50ms = 20 batches/second
-KEEPALIVE_INTERVAL = 25.0  # Send keepalive every 25s (ESP32 timeout is 30s)
 
 # Connected WebSocket clients
 clients: Set[WebSocket] = set()
@@ -36,6 +40,14 @@ udp_transport = None
 # Streaming state
 streaming_active = False
 
+# Recording state
+recording_active = False
+recording_file: Optional[csv.writer] = None
+recording_handle = None
+recording_filename: Optional[str] = None
+recording_start_time: Optional[float] = None
+RECORDINGS_DIR = Path(__file__).parent / "recordings"
+
 # Statistics
 stats = {
     "samples_received": 0,
@@ -44,8 +56,26 @@ stats = {
     "streaming": False,
     "last_sample_time": 0,
     "sample_rate": 0,
-    "keepalives": 0
+    "recording": False,
+    "recording_samples": 0,
+    "recording_file": None
 }
+
+# System event log (circular buffer)
+MAX_LOG_ENTRIES = 100
+system_logs: List[dict] = []
+
+def add_log(event: str, level: str = "info"):
+    """Add entry to system log."""
+    entry = {
+        "time": datetime.now().isoformat(),
+        "level": level,
+        "event": event
+    }
+    system_logs.append(entry)
+    if len(system_logs) > MAX_LOG_ENTRIES:
+        system_logs.pop(0)
+    print(f"[{level.upper()}] {event}")
 
 
 def parse_eeg_packet(data: bytes) -> dict | None:
@@ -99,12 +129,34 @@ class EEGProtocol(asyncio.DatagramProtocol):
         print(f"[UDP] Listening on {sockname[0]}:{sockname[1]}")
 
     def datagram_received(self, data, addr):
+        global recording_file
+
         packet = parse_eeg_packet(data)
         if packet:
             stats["samples_received"] += 1
             stats["streaming"] = True
             stats["last_sample_time"] = time.time()
             data_buffer.append(packet)
+
+            # Record to file if recording is active
+            if recording_active and recording_file:
+                elapsed = time.time() - recording_start_time
+                row = [
+                    stats["recording_samples"],
+                    round(elapsed, 4),
+                    packet['s'],
+                    *packet['c'],  # 8 channels
+                    *packet['a']   # 3 accel axes
+                ]
+                recording_file.writerow(row)
+                stats["recording_samples"] += 1
+
+            # Debug: log every 250 samples (once per second)
+            if stats["samples_received"] % 250 == 0:
+                ch = packet['c']
+                print(f"[DATA] Sample {packet['s']:3d}: "
+                      f"CH1={ch[0]:8.1f} CH2={ch[1]:8.1f} CH3={ch[2]:8.1f} CH4={ch[3]:8.1f} | "
+                      f"CH5={ch[4]:8.1f} CH6={ch[5]:8.1f} CH7={ch[6]:8.1f} CH8={ch[7]:8.1f} uV")
 
     def error_received(self, exc):
         print(f"[UDP] Error: {exc}")
@@ -147,24 +199,6 @@ async def broadcast_worker():
             await asyncio.sleep(0.1)
 
 
-async def keepalive_worker():
-    """Send periodic keepalive to ESP32 to prevent 30s timeout."""
-    global streaming_active
-
-    while True:
-        try:
-            await asyncio.sleep(KEEPALIVE_INTERVAL)
-
-            # Send keepalive if streaming is active and we have clients
-            if streaming_active and clients and udp_transport:
-                udp_transport.sendto(b'b', (ESP32_IP, ESP32_UDP_PORT))
-                stats["keepalives"] += 1
-                print(f"[Keepalive] Sent to ESP32 (total: {stats['keepalives']})")
-
-        except Exception as e:
-            print(f"[Keepalive] Error: {e}")
-
-
 async def stats_worker():
     """Calculate and print statistics."""
     last_samples = 0
@@ -188,8 +222,7 @@ async def stats_worker():
         print(f"[STATS] Rate: {stats['sample_rate']}/s, "
               f"Samples: {stats['samples_received']}, "
               f"Batches: {stats['batches_sent']}, "
-              f"Clients: {stats['clients_connected']}, "
-              f"Keepalives: {stats['keepalives']}")
+              f"Clients: {stats['clients_connected']}")
 
 
 @asynccontextmanager
@@ -201,7 +234,6 @@ async def lifespan(app: FastAPI):
     print(f"  ESP32:       {ESP32_IP}:{ESP32_UDP_PORT}")
     print(f"  Local UDP:   0.0.0.0:{LOCAL_UDP_PORT}")
     print(f"  Batch Rate:  {1/BROADCAST_INTERVAL:.0f} Hz")
-    print(f"  Keepalive:   every {KEEPALIVE_INTERVAL}s")
     print(f"  API:         http://localhost:8000")
     print(f"  WebSocket:   ws://localhost:8000/ws")
     print("=" * 60)
@@ -216,14 +248,14 @@ async def lifespan(app: FastAPI):
 
     # Start background tasks
     broadcast_task = asyncio.create_task(broadcast_worker())
-    keepalive_task = asyncio.create_task(keepalive_worker())
     stats_task = asyncio.create_task(stats_worker())
+
+    add_log("Server started")
 
     yield
 
     # Cleanup
     broadcast_task.cancel()
-    keepalive_task.cancel()
     stats_task.cancel()
     transport.close()
 
@@ -259,6 +291,12 @@ async def get_stats():
     return stats
 
 
+@app.get("/logs")
+async def get_logs():
+    """Get system event logs."""
+    return {"logs": system_logs}
+
+
 @app.post("/start")
 async def start_streaming():
     global streaming_active
@@ -266,7 +304,9 @@ async def start_streaming():
         udp_transport.sendto(b'b', (ESP32_IP, ESP32_UDP_PORT))
         streaming_active = True
         stats["streaming"] = True
+        add_log("Streaming started via REST API")
         return {"status": "ok", "message": "Streaming started"}
+    add_log("Failed to start streaming - UDP not ready", "error")
     return {"status": "error", "message": "UDP not ready"}
 
 
@@ -277,8 +317,111 @@ async def stop_streaming():
         udp_transport.sendto(b's', (ESP32_IP, ESP32_UDP_PORT))
         streaming_active = False
         stats["streaming"] = False
+        add_log("Streaming stopped via REST API")
         return {"status": "ok", "message": "Streaming stopped"}
+    add_log("Failed to stop streaming - UDP not ready", "error")
     return {"status": "error", "message": "UDP not ready"}
+
+
+@app.post("/record/start")
+async def start_recording():
+    """Start recording EEG data to CSV file."""
+    global recording_active, recording_file, recording_handle, recording_filename, recording_start_time
+
+    if recording_active:
+        return {"status": "error", "message": "Already recording"}
+
+    # Create recordings directory
+    RECORDINGS_DIR.mkdir(exist_ok=True)
+
+    # Generate filename with timestamp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    recording_filename = f"eeg_recording_{timestamp}.csv"
+    filepath = RECORDINGS_DIR / recording_filename
+
+    # Open file and create CSV writer
+    recording_handle = open(filepath, 'w', newline='')
+    recording_file = csv.writer(recording_handle)
+
+    # Write header
+    recording_file.writerow([
+        'sample_index', 'time_s', 'packet_num',
+        'ch1_uv', 'ch2_uv', 'ch3_uv', 'ch4_uv',
+        'ch5_uv', 'ch6_uv', 'ch7_uv', 'ch8_uv',
+        'accel_x', 'accel_y', 'accel_z'
+    ])
+
+    recording_start_time = time.time()
+    recording_active = True
+    stats["recording"] = True
+    stats["recording_samples"] = 0
+    stats["recording_file"] = recording_filename
+
+    add_log(f"Recording started: {recording_filename}")
+    return {
+        "status": "ok",
+        "message": "Recording started",
+        "filename": recording_filename
+    }
+
+
+@app.post("/record/stop")
+async def stop_recording():
+    """Stop recording and close the file."""
+    global recording_active, recording_file, recording_handle, recording_filename
+
+    if not recording_active:
+        return {"status": "error", "message": "Not recording"}
+
+    recording_active = False
+    stats["recording"] = False
+
+    # Close file
+    if recording_handle:
+        recording_handle.close()
+        recording_handle = None
+        recording_file = None
+
+    duration = time.time() - recording_start_time
+    samples = stats["recording_samples"]
+
+    add_log(f"Recording stopped: {recording_filename} ({samples} samples, {duration:.1f}s)")
+
+    return {
+        "status": "ok",
+        "message": "Recording stopped",
+        "filename": recording_filename,
+        "samples": samples,
+        "duration_s": round(duration, 2)
+    }
+
+
+@app.get("/recordings")
+async def list_recordings():
+    """List all recorded files."""
+    RECORDINGS_DIR.mkdir(exist_ok=True)
+    files = []
+    for f in sorted(RECORDINGS_DIR.glob("*.csv"), reverse=True):
+        stat = f.stat()
+        files.append({
+            "filename": f.name,
+            "size_kb": round(stat.st_size / 1024, 1),
+            "created": datetime.fromtimestamp(stat.st_mtime).isoformat()
+        })
+    return {"recordings": files}
+
+
+@app.get("/recordings/{filename}")
+async def download_recording(filename: str):
+    """Download a specific recording file."""
+    filepath = RECORDINGS_DIR / filename
+    if not filepath.exists():
+        return {"status": "error", "message": "File not found"}
+    return FileResponse(
+        filepath,
+        media_type="text/csv",
+        filename=filename
+    )
 
 
 @app.websocket("/ws")
@@ -290,7 +433,7 @@ async def websocket_endpoint(websocket: WebSocket):
     stats["clients_connected"] = len(clients)
 
     client_ip = websocket.client.host if websocket.client else "unknown"
-    print(f"[WS] Client connected: {client_ip} (total: {len(clients)})")
+    add_log(f"WebSocket client connected: {client_ip} (total: {len(clients)})")
 
     # Send initial config
     try:
@@ -314,6 +457,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         udp_transport.sendto(b'b', (ESP32_IP, ESP32_UDP_PORT))
                         streaming_active = True
                         stats["streaming"] = True
+                        add_log("Streaming started via WebSocket")
                         await websocket.send_json({"type": "status", "streaming": True})
 
                 elif cmd.get("action") == "stop":
@@ -321,6 +465,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         udp_transport.sendto(b's', (ESP32_IP, ESP32_UDP_PORT))
                         streaming_active = False
                         stats["streaming"] = False
+                        add_log("Streaming stopped via WebSocket")
                         await websocket.send_json({"type": "status", "streaming": False})
 
             except asyncio.TimeoutError:
@@ -336,7 +481,7 @@ async def websocket_endpoint(websocket: WebSocket):
     finally:
         clients.discard(websocket)
         stats["clients_connected"] = len(clients)
-        print(f"[WS] Client disconnected: {client_ip} (total: {len(clients)})")
+        add_log(f"WebSocket client disconnected: {client_ip} (total: {len(clients)})")
 
         # Stop streaming if no more clients
         if not clients:

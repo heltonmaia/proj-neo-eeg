@@ -27,7 +27,8 @@
 #define DEVICE_NAME "potyplex-eeg"
 
 // Client timeout: disconnect client if no command received in this time (ms)
-#define CLIENT_TIMEOUT_MS 30000             // 30 seconds
+// Set to 0 to disable timeout (streaming continues until 's' command)
+#define CLIENT_TIMEOUT_MS 0
 
 //=============================================================================
 // DEBUG MODE

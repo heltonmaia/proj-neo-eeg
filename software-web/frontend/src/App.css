@@ -327,6 +327,146 @@ body {
   border-color: #484f58;
 }
 
+/* System Status Panel */
+.status-panel {
+  background-color: #161b22;
+  border-radius: 8px;
+  border: 1px solid #30363d;
+  margin-bottom: 15px;
+  overflow: hidden;
+}
+
+.status-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 15px;
+  background-color: #21262d;
+  border-bottom: 1px solid #30363d;
+  cursor: pointer;
+  user-select: none;
+}
+
+.status-panel-header:hover {
+  background-color: #30363d;
+}
+
+.status-panel-header h3 {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #8b949e;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.status-panel-header .toggle-icon {
+  font-size: 0.7rem;
+  color: #8b949e;
+  transition: transform 0.2s ease;
+}
+
+.status-panel-header .toggle-icon.expanded {
+  transform: rotate(180deg);
+}
+
+.status-panel-content {
+  display: none;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.status-panel-content.expanded {
+  display: block;
+}
+
+.status-indicators {
+  display: flex;
+  gap: 15px;
+  padding: 10px 15px;
+  border-bottom: 1px solid #30363d;
+  flex-wrap: wrap;
+}
+
+.status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+}
+
+.status-indicator .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.status-indicator .dot.green {
+  background-color: #3fb950;
+  box-shadow: 0 0 6px #3fb950;
+}
+
+.status-indicator .dot.yellow {
+  background-color: #d29922;
+}
+
+.status-indicator .dot.red {
+  background-color: #f85149;
+}
+
+.status-indicator .dot.gray {
+  background-color: #484f58;
+}
+
+.status-indicator .label {
+  color: #8b949e;
+}
+
+.status-indicator .value {
+  font-family: 'SF Mono', Monaco, monospace;
+  color: #e6edf3;
+}
+
+/* Log entries */
+.log-entries {
+  padding: 8px 0;
+}
+
+.log-entry {
+  padding: 4px 15px;
+  font-family: 'SF Mono', Monaco, monospace;
+  font-size: 0.75rem;
+  border-bottom: 1px solid #21262d;
+}
+
+.log-entry:last-child {
+  border-bottom: none;
+}
+
+.log-entry .log-time {
+  color: #8b949e;
+  margin-right: 10px;
+}
+
+.log-entry.info .log-event {
+  color: #58a6ff;
+}
+
+.log-entry.warn .log-event {
+  color: #d29922;
+}
+
+.log-entry.error .log-event {
+  color: #f85149;
+}
+
+.log-empty {
+  text-align: center;
+  color: #8b949e;
+  font-size: 0.8rem;
+  padding: 20px;
+}
+
 /* Responsive */
 @media (max-width: 1200px) {
   .charts-grid {

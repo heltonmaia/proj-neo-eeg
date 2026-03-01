@@ -27,18 +27,28 @@ const EEGChart = memo(function EEGChart({
 
   // Calculate Y domain based on zoom settings
   const yDomain = useMemo(() => {
-    if (autoZoom || data.length === 0) {
-      return ['auto', 'auto']
+    if (data.length === 0) {
+      return [-100, 100]
     }
 
-    // Calculate fixed domain based on zoom level
     const values = data.map(d => d.y)
     const min = Math.min(...values)
     const max = Math.max(...values)
-    const range = max - min || 100
+    const range = max - min
     const center = (max + min) / 2
-    const halfRange = (range / 2) * zoomLevel
 
+    // Ensure minimum visible range (at least 10 uV)
+    const minRange = 10
+    const effectiveRange = Math.max(range, minRange)
+
+    if (autoZoom) {
+      // Auto-zoom with padding
+      const padding = effectiveRange * 0.1
+      return [min - padding, max + padding]
+    }
+
+    // Manual zoom
+    const halfRange = (effectiveRange / 2) * zoomLevel
     return [center - halfRange, center + halfRange]
   }, [data, autoZoom, zoomLevel])
 

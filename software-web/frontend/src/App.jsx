@@ -2,8 +2,10 @@ import { useState, useEffect, useRef } from 'react'
 import EEGChart from './components/EEGChart'
 
 const WS_URL = 'ws://localhost:8000/ws'
+const API_URL = 'http://localhost:8000'
 const MAX_SAMPLES = 500
 const UPDATE_INTERVAL = 50 // ms (20 FPS)
+const LOG_POLL_INTERVAL = 2000 // ms
 
 function App() {
   const [wsConnected, setWsConnected] = useState(false)
@@ -21,6 +23,9 @@ function App() {
     Array(8).fill(null).map(() => [])
   )
   const [selectedChannels, setSelectedChannels] = useState([0, 1, 2, 3, 4, 5, 6, 7])
+  const [systemLogs, setSystemLogs] = useState([])
+  const [serverStats, setServerStats] = useState(null)
+  const [statusExpanded, setStatusExpanded] = useState(false)
 
   const wsRef = useRef(null)
   const dataBufferRef = useRef(Array(8).fill(null).map(() => []))
@@ -138,6 +143,31 @@ function App() {
     return () => clearInterval(interval)
   }, [])
 
+  // Poll server stats and logs
+  useEffect(() => {
+    const fetchStatus = async () => {
+      try {
+        const [statsRes, logsRes] = await Promise.all([
+          fetch(`${API_URL}/stats`),
+          fetch(`${API_URL}/logs`)
+        ])
+        if (statsRes.ok) {
+          setServerStats(await statsRes.json())
+        }
+        if (logsRes.ok) {
+          const data = await logsRes.json()
+          setSystemLogs(data.logs || [])
+        }
+      } catch (e) {
+        // Server might be down
+      }
+    }
+
+    fetchStatus()
+    const interval = setInterval(fetchStatus, LOG_POLL_INTERVAL)
+    return () => clearInterval(interval)
+  }, [])
+
   const handleStart = () => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ action: 'start' }))
@@ -215,6 +245,11 @@ function App() {
     })
   }
 
+  const formatLogTime = (isoString) => {
+    const date = new Date(isoString)
+    return date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  }
+
   return (
     <div className="app">
       <header className="header">
@@ -279,6 +314,53 @@ function App() {
             CH{i + 1}
           </label>
         ))}
+      </div>
+
+      {/* System Status Panel */}
+      <div className="status-panel">
+        <div
+          className="status-panel-header"
+          onClick={() => setStatusExpanded(!statusExpanded)}
+        >
+          <h3>
+            <span>Status do Sistema</span>
+          </h3>
+          <span className={`toggle-icon ${statusExpanded ? 'expanded' : ''}`}>
+            {statusExpanded ? '▲' : '▼'}
+          </span>
+        </div>
+        <div className={`status-panel-content ${statusExpanded ? 'expanded' : ''}`}>
+          <div className="status-indicators">
+            <div className="status-indicator">
+              <span className={`dot ${wsConnected ? 'green' : 'red'}`}></span>
+              <span className="label">Backend:</span>
+              <span className="value">{wsConnected ? 'Conectado' : 'Desconectado'}</span>
+            </div>
+            <div className="status-indicator">
+              <span className={`dot ${receiving ? 'green' : streaming ? 'yellow' : 'gray'}`}></span>
+              <span className="label">ESP32:</span>
+              <span className="value">{receiving ? 'Recebendo' : streaming ? 'Aguardando' : 'Parado'}</span>
+            </div>
+            {serverStats && (
+              <div className="status-indicator">
+                <span className="label">Samples:</span>
+                <span className="value">{serverStats.samples_received?.toLocaleString()}</span>
+              </div>
+            )}
+          </div>
+          <div className="log-entries">
+            {systemLogs.length === 0 ? (
+              <div className="log-empty">Nenhum evento registrado</div>
+            ) : (
+              [...systemLogs].reverse().slice(0, 20).map((log, idx) => (
+                <div key={idx} className={`log-entry ${log.level}`}>
+                  <span className="log-time">{formatLogTime(log.time)}</span>
+                  <span className="log-event">{log.event}</span>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
       </div>
 
       <div className="charts-grid">

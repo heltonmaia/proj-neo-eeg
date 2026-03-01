@@ -1181,13 +1181,15 @@ void OpenBCI_32bit_Library::sendChannelData()
   // Skip if WiFi not connected or no client
   if (!wifiConnected || !clientConnected) return;
 
-  // Check client timeout
+  // Check client timeout (skip if CLIENT_TIMEOUT_MS == 0, meaning disabled)
+  #if CLIENT_TIMEOUT_MS > 0
   if (millis() - lastClientActivity > CLIENT_TIMEOUT_MS) {
     clientConnected = false;
     streaming = false;
     Serial.println("[INFO] Client timeout - streaming stopped");
     return;
   }
+  #endif
 
   byte index = 0;
   {
