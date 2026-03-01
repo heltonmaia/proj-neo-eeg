@@ -43,3 +43,7 @@ venv/
 
 # Node.js
 node_modules/
+
+# Local config
+.env.local
+.uv-cache/
