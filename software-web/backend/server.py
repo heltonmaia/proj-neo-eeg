@@ -37,9 +37,7 @@ stats = {
 
 
 def parse_eeg_packet(data: bytes) -> dict | None:
-    """
-    Parse OpenBCI packet format (33 bytes).
-    """
+    """Parse OpenBCI packet format (33 bytes)."""
     if len(data) != 33:
         return None
 
@@ -84,10 +82,9 @@ async def broadcast_to_clients(message: str):
     for client in clients:
         try:
             await client.send_text(message)
-        except:
+        except Exception:
             disconnected.add(client)
 
-    # Remove disconnected clients
     for client in disconnected:
         clients.discard(client)
         stats["clients_connected"] = len(clients)
@@ -97,7 +94,6 @@ async def udp_receiver():
     """Receive UDP packets from ESP32 and broadcast to WebSocket clients."""
     global udp_socket
 
-    # Create UDP socket
     udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     udp_socket.setblocking(False)
@@ -110,17 +106,15 @@ async def udp_receiver():
 
     while True:
         try:
-            # Non-blocking receive
             try:
                 data, addr = await asyncio.wait_for(
                     loop.run_in_executor(None, lambda: udp_socket.recvfrom(64)),
                     timeout=0.1
                 )
             except asyncio.TimeoutError:
-                await asyncio.sleep(0.01)
+                await asyncio.sleep(0.001)
                 continue
 
-            # Parse packet
             packet = parse_eeg_packet(data)
             if packet is None:
                 continue
@@ -128,14 +122,13 @@ async def udp_receiver():
             stats["samples_received"] += 1
             stats["streaming"] = True
 
-            # Broadcast to WebSocket clients
             if clients:
                 message = json.dumps(packet)
                 await broadcast_to_clients(message)
                 stats["packets_sent"] += 1
 
         except Exception as e:
-            if "WinError" not in str(e) and "BlockingIOError" not in str(e):
+            if "BlockingIOError" not in str(e):
                 print(f"[UDP] Error: {e}")
             await asyncio.sleep(0.01)
 
@@ -161,20 +154,17 @@ async def lifespan(app: FastAPI):
     print(f"  WebSocket:   ws://localhost:8000/ws")
     print("=" * 50)
 
-    # Start background tasks
     udp_task = asyncio.create_task(udp_receiver())
     stats_task = asyncio.create_task(stats_printer())
 
     yield
 
-    # Cleanup
     udp_task.cancel()
     stats_task.cancel()
     if udp_socket:
         udp_socket.close()
 
 
-# Create FastAPI app
 app = FastAPI(
     title="Potyplex EEG API",
     description="Real-time EEG data streaming",
@@ -182,7 +172,6 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -235,7 +224,7 @@ async def websocket_endpoint(websocket: WebSocket):
     clients.add(websocket)
     stats["clients_connected"] = len(clients)
 
-    client_ip = websocket.client.host
+    client_ip = websocket.client.host if websocket.client else "unknown"
     print(f"[WS] Client connected: {client_ip} (total: {len(clients)})")
 
     # Send initial config
@@ -247,9 +236,9 @@ async def websocket_endpoint(websocket: WebSocket):
 
     try:
         while True:
-            # Handle incoming messages from client
+            # Wait for messages from client (non-blocking with short timeout)
             try:
-                data = await asyncio.wait_for(websocket.receive_text(), timeout=30)
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=60)
                 cmd = json.loads(data)
 
                 if cmd.get("action") == "start":
@@ -262,9 +251,16 @@ async def websocket_endpoint(websocket: WebSocket):
                         udp_socket.sendto(b's', (ESP32_IP, UDP_PORT))
                         await websocket.send_json({"type": "status", "streaming": False})
 
+                elif cmd.get("type") == "pong":
+                    # Client responded to ping
+                    pass
+
             except asyncio.TimeoutError:
-                # Send keepalive
-                await websocket.send_json({"type": "ping"})
+                # Send keepalive ping
+                try:
+                    await websocket.send_json({"type": "ping"})
+                except Exception:
+                    break
 
     except WebSocketDisconnect:
         pass
