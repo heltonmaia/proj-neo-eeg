@@ -6,10 +6,17 @@ const MAX_SAMPLES = 500
 const UPDATE_INTERVAL = 50 // ms (20 FPS)
 
 function App() {
-  const [connected, setConnected] = useState(false)
+  const [wsConnected, setWsConnected] = useState(false)
   const [streaming, setStreaming] = useState(false)
+  const [receiving, setReceiving] = useState(false)
   const [config, setConfig] = useState({ sample_rate: 250, channels: 8 })
   const [stats, setStats] = useState({ samples: 0, rate: 0 })
+  const [autoZoom, setAutoZoom] = useState(() =>
+    Array(8).fill(true)  // Auto-zoom enabled by default
+  )
+  const [zoomLevel, setZoomLevel] = useState(() =>
+    Array(8).fill(1)  // 1 = 100%, 2 = 50%, 0.5 = 200%
+  )
   const [channelData, setChannelData] = useState(() =>
     Array(8).fill(null).map(() => [])
   )
@@ -35,14 +42,15 @@ function App() {
       ws.onopen = () => {
         if (!mounted) return
         console.log('[WS] Connected')
-        setConnected(true)
+        setWsConnected(true)
       }
 
       ws.onclose = () => {
         if (!mounted) return
         console.log('[WS] Disconnected')
-        setConnected(false)
+        setWsConnected(false)
         setStreaming(false)
+        setReceiving(false)
         wsRef.current = null
 
         // Reconnect after 2 seconds
@@ -122,6 +130,9 @@ function App() {
         samples: currentCount,
         rate: rate
       })
+
+      // Update receiving status (connected to ESP32 = receiving data)
+      setReceiving(rate > 0)
     }, UPDATE_INTERVAL)
 
     return () => clearInterval(interval)
@@ -157,16 +168,63 @@ function App() {
     )
   }
 
+  const toggleAutoZoom = (ch) => {
+    setAutoZoom(prev => {
+      const newState = [...prev]
+      newState[ch] = !newState[ch]
+      return newState
+    })
+  }
+
+  const zoomIn = (ch) => {
+    setZoomLevel(prev => {
+      const newState = [...prev]
+      newState[ch] = Math.min(prev[ch] * 1.5, 10)  // Max 10x zoom
+      return newState
+    })
+    setAutoZoom(prev => {
+      const newState = [...prev]
+      newState[ch] = false  // Disable auto-zoom when manually zooming
+      return newState
+    })
+  }
+
+  const zoomOut = (ch) => {
+    setZoomLevel(prev => {
+      const newState = [...prev]
+      newState[ch] = Math.max(prev[ch] / 1.5, 0.1)  // Min 0.1x zoom
+      return newState
+    })
+    setAutoZoom(prev => {
+      const newState = [...prev]
+      newState[ch] = false
+      return newState
+    })
+  }
+
+  const resetZoom = (ch) => {
+    setZoomLevel(prev => {
+      const newState = [...prev]
+      newState[ch] = 1
+      return newState
+    })
+    setAutoZoom(prev => {
+      const newState = [...prev]
+      newState[ch] = true
+      return newState
+    })
+  }
+
   return (
     <div className="app">
       <header className="header">
         <h1>Potyplex EEG</h1>
         <div className="status-bar">
-          <div className={`connection-status ${connected ? 'connected' : 'disconnected'}`}>
+          <div className={`connection-status ${receiving ? 'connected' : wsConnected ? 'waiting' : 'disconnected'}`}>
             <span className="indicator" />
-            {connected ? 'Connected' : 'Disconnected'}
+            {receiving ? 'ESP32 Conectado' : wsConnected ? 'Aguardando ESP32' : 'Desconectado'}
           </div>
-          {streaming && <div className="live-badge">LIVE</div>}
+          {streaming && receiving && <div className="live-badge">LIVE</div>}
         </div>
       </header>
 
@@ -174,14 +232,14 @@ function App() {
         <div className="buttons">
           <button
             onClick={handleStart}
-            disabled={!connected || streaming}
+            disabled={!wsConnected || streaming}
             className="btn btn-start"
           >
             ▶ Start
           </button>
           <button
             onClick={handleStop}
-            disabled={!connected || !streaming}
+            disabled={!wsConnected || !streaming}
             className="btn btn-stop"
           >
             ⬛ Stop
@@ -230,6 +288,12 @@ function App() {
             channelIndex={ch}
             data={channelData[ch]}
             streaming={streaming}
+            autoZoom={autoZoom[ch]}
+            zoomLevel={zoomLevel[ch]}
+            onToggleAutoZoom={() => toggleAutoZoom(ch)}
+            onZoomIn={() => zoomIn(ch)}
+            onZoomOut={() => zoomOut(ch)}
+            onResetZoom={() => resetZoom(ch)}
           />
         ))}
       </div>

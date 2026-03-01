@@ -22,8 +22,7 @@ ESP32_UDP_PORT = 12345
 LOCAL_UDP_PORT = 12346  # Fixed port for receiving
 SAMPLE_RATE = 250  # Hz
 BROADCAST_INTERVAL = 0.05  # 50ms = 20 batches/second
-DATA_TIMEOUT = 2.0  # Consider data stale after 2 seconds
-RECONNECT_INTERVAL = 1.0  # Check for reconnect every 1 second
+KEEPALIVE_INTERVAL = 25.0  # Send keepalive every 25s (ESP32 timeout is 30s)
 
 # Connected WebSocket clients
 clients: Set[WebSocket] = set()
@@ -45,7 +44,7 @@ stats = {
     "streaming": False,
     "last_sample_time": 0,
     "sample_rate": 0,
-    "reconnects": 0
+    "keepalives": 0
 }
 
 
@@ -148,26 +147,22 @@ async def broadcast_worker():
             await asyncio.sleep(0.1)
 
 
-async def reconnect_worker():
-    """Monitor data flow and reconnect if data stops arriving."""
+async def keepalive_worker():
+    """Send periodic keepalive to ESP32 to prevent 30s timeout."""
     global streaming_active
 
     while True:
         try:
-            await asyncio.sleep(RECONNECT_INTERVAL)
+            await asyncio.sleep(KEEPALIVE_INTERVAL)
 
-            # Only act if streaming should be active and we have clients
+            # Send keepalive if streaming is active and we have clients
             if streaming_active and clients and udp_transport:
-                time_since_data = time.time() - stats["last_sample_time"]
-
-                # If no data for DATA_TIMEOUT seconds, send reconnect
-                if stats["last_sample_time"] > 0 and time_since_data > DATA_TIMEOUT:
-                    print(f"[Reconnect] No data for {time_since_data:.1f}s, sending 'b'")
-                    udp_transport.sendto(b'b', (ESP32_IP, ESP32_UDP_PORT))
-                    stats["reconnects"] += 1
+                udp_transport.sendto(b'b', (ESP32_IP, ESP32_UDP_PORT))
+                stats["keepalives"] += 1
+                print(f"[Keepalive] Sent to ESP32 (total: {stats['keepalives']})")
 
         except Exception as e:
-            print(f"[Reconnect] Error: {e}")
+            print(f"[Keepalive] Error: {e}")
 
 
 async def stats_worker():
@@ -194,7 +189,7 @@ async def stats_worker():
               f"Samples: {stats['samples_received']}, "
               f"Batches: {stats['batches_sent']}, "
               f"Clients: {stats['clients_connected']}, "
-              f"Reconnects: {stats['reconnects']}")
+              f"Keepalives: {stats['keepalives']}")
 
 
 @asynccontextmanager
@@ -206,7 +201,7 @@ async def lifespan(app: FastAPI):
     print(f"  ESP32:       {ESP32_IP}:{ESP32_UDP_PORT}")
     print(f"  Local UDP:   0.0.0.0:{LOCAL_UDP_PORT}")
     print(f"  Batch Rate:  {1/BROADCAST_INTERVAL:.0f} Hz")
-    print(f"  Reconnect:   after {DATA_TIMEOUT}s without data")
+    print(f"  Keepalive:   every {KEEPALIVE_INTERVAL}s")
     print(f"  API:         http://localhost:8000")
     print(f"  WebSocket:   ws://localhost:8000/ws")
     print("=" * 60)
@@ -221,14 +216,14 @@ async def lifespan(app: FastAPI):
 
     # Start background tasks
     broadcast_task = asyncio.create_task(broadcast_worker())
-    reconnect_task = asyncio.create_task(reconnect_worker())
+    keepalive_task = asyncio.create_task(keepalive_worker())
     stats_task = asyncio.create_task(stats_worker())
 
     yield
 
     # Cleanup
     broadcast_task.cancel()
-    reconnect_task.cancel()
+    keepalive_task.cancel()
     stats_task.cancel()
     transport.close()
 

@@ -60,8 +60,18 @@ body {
   box-shadow: 0 0 8px #3fb950;
 }
 
+.connection-status.waiting .indicator {
+  background-color: #d29922;
+  animation: blink 1s infinite;
+}
+
 .connection-status.disconnected .indicator {
   background-color: #f85149;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
 }
 
 .live-badge {
@@ -242,6 +252,79 @@ body {
   font-size: 0.9rem;
   color: #3fb950;
   font-weight: 500;
+}
+
+/* Zoom Controls */
+.zoom-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.zoom-btn {
+  width: 22px;
+  height: 22px;
+  border: 1px solid #30363d;
+  background-color: #21262d;
+  color: #8b949e;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.zoom-btn:hover:not(:disabled) {
+  background-color: #30363d;
+  color: #e6edf3;
+}
+
+.zoom-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.zoom-btn.reset {
+  font-size: 0.7rem;
+}
+
+.auto-zoom-toggle {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  margin-right: 4px;
+}
+
+.auto-zoom-toggle input {
+  display: none;
+}
+
+.auto-zoom-toggle .checkbox-icon {
+  width: 22px;
+  height: 22px;
+  border: 1px solid #30363d;
+  background-color: #21262d;
+  color: #8b949e;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.auto-zoom-toggle input:checked + .checkbox-icon {
+  background-color: #1f6feb;
+  border-color: #1f6feb;
+  color: #fff;
+}
+
+.auto-zoom-toggle:hover .checkbox-icon {
+  border-color: #484f58;
 }
 
 /* Responsive */
