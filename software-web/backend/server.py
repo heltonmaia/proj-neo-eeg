@@ -2,24 +2,28 @@
 """
 Potyplex EEG - FastAPI Backend
 Receives UDP data from ESP32 and broadcasts via WebSocket to web clients.
+Supports video capture from USB cameras.
 
 Usage:
     uvicorn server:app --reload --host 0.0.0.0 --port 8000
 """
 
 import asyncio
+import base64
 import csv
 import json
 import os
 import time
+import threading
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Set, List, Optional
+from typing import Set, List, Optional, Dict
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+import cv2
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 # Configuration
 ESP32_IP = "192.168.4.1"
@@ -27,6 +31,14 @@ ESP32_UDP_PORT = 12345
 LOCAL_UDP_PORT = 12346  # Fixed port for receiving
 SAMPLE_RATE = 250  # Hz
 BROADCAST_INTERVAL = 0.05  # 50ms = 20 batches/second
+
+# File rotation settings
+MAX_RECORDING_DURATION = 12 * 60 * 60  # 12 hours in seconds
+MAX_RECORDING_SIZE_MB = 500  # Max file size before rotation (MB)
+
+# Camera settings
+CAMERA_FRAME_RATE = 15  # Target FPS for streaming
+CAMERA_JPEG_QUALITY = 70  # JPEG compression quality (1-100)
 
 # Connected WebSocket clients
 clients: Set[WebSocket] = set()
@@ -48,8 +60,18 @@ recording_dir: Optional[Path] = None
 recording_session_id: Optional[str] = None
 recording_start_time: Optional[float] = None
 recording_metadata: dict = {}
+recording_part: int = 0  # Current recording part (for rotation)
 RECORDINGS_DIR = Path(__file__).parent / "recordings"
 FLUSH_INTERVAL = 250  # Flush to disk every 250 samples (1 second)
+
+# Camera state
+camera_capture: Optional[cv2.VideoCapture] = None
+camera_active = False
+camera_recording = False
+camera_writer: Optional[cv2.VideoWriter] = None
+camera_clients: Set[WebSocket] = set()
+camera_frame_count = 0
+camera_lock = threading.Lock()
 
 # Statistics
 stats = {
@@ -61,7 +83,10 @@ stats = {
     "sample_rate": 0,
     "recording": False,
     "recording_samples": 0,
-    "recording_file": None
+    "recording_file": None,
+    "camera_active": False,
+    "camera_recording": False,
+    "camera_fps": 0
 }
 
 # System event log (circular buffer)
@@ -79,6 +104,236 @@ def add_log(event: str, level: str = "info"):
     if len(system_logs) > MAX_LOG_ENTRIES:
         system_logs.pop(0)
     print(f"[{level.upper()}] {event}")
+
+
+def detect_cameras() -> List[Dict]:
+    """Detect available USB cameras and their resolutions."""
+    cameras = []
+
+    # Try camera indices 0-9
+    for idx in range(10):
+        cap = cv2.VideoCapture(idx)
+        if cap.isOpened():
+            # Get camera properties
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            fps = cap.get(cv2.CAP_PROP_FPS) or 30
+
+            # Try to get camera name (may not work on all systems)
+            name = f"Camera {idx}"
+
+            # Test common resolutions
+            resolutions = []
+            test_res = [(640, 480), (1280, 720), (1920, 1080), (320, 240)]
+            for w, h in test_res:
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+                actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                res = f"{actual_w}x{actual_h}"
+                if res not in resolutions:
+                    resolutions.append(res)
+
+            cameras.append({
+                "index": idx,
+                "name": name,
+                "current_resolution": f"{width}x{height}",
+                "supported_resolutions": resolutions,
+                "fps": fps
+            })
+            cap.release()
+
+    return cameras
+
+
+def start_camera(camera_index: int = 0, width: int = 640, height: int = 480) -> bool:
+    """Start camera capture."""
+    global camera_capture, camera_active
+
+    with camera_lock:
+        if camera_capture is not None:
+            camera_capture.release()
+
+        camera_capture = cv2.VideoCapture(camera_index)
+        if not camera_capture.isOpened():
+            add_log(f"Failed to open camera {camera_index}", "error")
+            return False
+
+        # Set resolution
+        camera_capture.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        camera_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        camera_capture.set(cv2.CAP_PROP_FPS, CAMERA_FRAME_RATE)
+
+        # Reduce buffer size for lower latency
+        camera_capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+        camera_active = True
+        stats["camera_active"] = True
+
+        actual_w = int(camera_capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+        actual_h = int(camera_capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        add_log(f"Camera {camera_index} started at {actual_w}x{actual_h}")
+        return True
+
+
+def stop_camera():
+    """Stop camera capture."""
+    global camera_capture, camera_active, camera_writer, camera_recording
+
+    with camera_lock:
+        camera_active = False
+        stats["camera_active"] = False
+
+        if camera_writer is not None:
+            camera_writer.release()
+            camera_writer = None
+            camera_recording = False
+            stats["camera_recording"] = False
+
+        if camera_capture is not None:
+            camera_capture.release()
+            camera_capture = None
+
+        add_log("Camera stopped")
+
+
+def get_camera_frame() -> Optional[bytes]:
+    """Capture a frame and encode as JPEG."""
+    global camera_frame_count
+
+    if not camera_active or camera_capture is None:
+        return None
+
+    with camera_lock:
+        ret, frame = camera_capture.read()
+        if not ret:
+            return None
+
+        # Encode as JPEG
+        encode_params = [cv2.IMWRITE_JPEG_QUALITY, CAMERA_JPEG_QUALITY]
+        _, buffer = cv2.imencode('.jpg', frame, encode_params)
+        camera_frame_count += 1
+
+        return buffer.tobytes()
+
+
+def start_camera_recording(output_path: Path, fps: int = 15) -> bool:
+    """Start recording video to file."""
+    global camera_writer, camera_recording
+
+    if not camera_active or camera_capture is None:
+        return False
+
+    with camera_lock:
+        width = int(camera_capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(camera_capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+        # Use MJPG codec for better compatibility
+        fourcc = cv2.VideoWriter_fourcc(*'MJPG')
+        camera_writer = cv2.VideoWriter(str(output_path), fourcc, fps, (width, height))
+
+        if not camera_writer.isOpened():
+            add_log("Failed to start video recording", "error")
+            return False
+
+        camera_recording = True
+        stats["camera_recording"] = True
+        add_log(f"Video recording started: {output_path.name}")
+        return True
+
+
+def stop_camera_recording():
+    """Stop video recording."""
+    global camera_writer, camera_recording
+
+    with camera_lock:
+        if camera_writer is not None:
+            camera_writer.release()
+            camera_writer = None
+        camera_recording = False
+        stats["camera_recording"] = False
+        add_log("Video recording stopped")
+
+
+def write_camera_frame():
+    """Write current frame to video file if recording."""
+    if not camera_recording or camera_writer is None or camera_capture is None:
+        return
+
+    with camera_lock:
+        ret, frame = camera_capture.read()
+        if ret:
+            camera_writer.write(frame)
+
+
+def check_recording_rotation() -> bool:
+    """Check if recording file needs rotation and perform it if necessary."""
+    global recording_file, recording_handle, recording_part, recording_metadata
+
+    if not recording_active or not recording_dir:
+        return False
+
+    needs_rotation = False
+    reason = ""
+
+    # Check duration
+    elapsed = time.time() - recording_start_time
+    if elapsed >= MAX_RECORDING_DURATION:
+        needs_rotation = True
+        reason = "max duration reached"
+
+    # Check file size
+    csv_path = recording_dir / f"data_part{recording_part}.csv" if recording_part > 0 else recording_dir / "data.csv"
+    if csv_path.exists():
+        size_mb = csv_path.stat().st_size / (1024 * 1024)
+        if size_mb >= MAX_RECORDING_SIZE_MB:
+            needs_rotation = True
+            reason = f"max size reached ({size_mb:.1f} MB)"
+
+    if not needs_rotation:
+        return False
+
+    # Perform rotation
+    add_log(f"Rotating recording file: {reason}")
+
+    # Save current part metadata
+    part_end_time = datetime.now().isoformat()
+    part_samples = stats["recording_samples"]
+
+    # Close current file
+    if recording_handle:
+        recording_handle.flush()
+        recording_handle.close()
+
+    # Increment part number
+    recording_part += 1
+
+    # Create new CSV file
+    csv_path = recording_dir / f"data_part{recording_part}.csv"
+    recording_handle = open(csv_path, 'w', newline='')
+    recording_file = csv.writer(recording_handle)
+
+    # Write header
+    recording_file.writerow([
+        'sample_index', 'time_s', 'packet_num',
+        'ch1_uv', 'ch2_uv', 'ch3_uv', 'ch4_uv',
+        'ch5_uv', 'ch6_uv', 'ch7_uv', 'ch8_uv',
+        'accel_x', 'accel_y', 'accel_z'
+    ])
+
+    # Update metadata with parts info
+    if "parts" not in recording_metadata:
+        recording_metadata["parts"] = []
+
+    recording_metadata["parts"].append({
+        "part": recording_part - 1,
+        "filename": f"data_part{recording_part - 1}.csv" if recording_part > 1 else "data.csv",
+        "end_time": part_end_time,
+        "samples": part_samples
+    })
+
+    add_log(f"Recording rotated to part {recording_part}")
+    return True
 
 
 def parse_eeg_packet(data: bytes) -> dict | None:
@@ -157,6 +412,8 @@ class EEGProtocol(asyncio.DatagramProtocol):
                 # Periodic flush to prevent data loss
                 if stats["recording_samples"] % FLUSH_INTERVAL == 0:
                     recording_handle.flush()
+                    # Check if rotation is needed
+                    check_recording_rotation()
 
             # Debug: log every 250 samples (once per second)
             if stats["samples_received"] % 250 == 0:
@@ -232,6 +489,63 @@ async def stats_worker():
               f"Clients: {stats['clients_connected']}")
 
 
+async def camera_worker():
+    """Worker that captures and broadcasts camera frames."""
+    global camera_frame_count
+    last_frame_count = 0
+    last_time = time.time()
+    frame_interval = 1.0 / CAMERA_FRAME_RATE
+
+    while True:
+        try:
+            if not camera_active or not camera_clients:
+                await asyncio.sleep(0.1)
+                continue
+
+            # Capture frame
+            frame_data = get_camera_frame()
+            if frame_data is None:
+                await asyncio.sleep(0.05)
+                continue
+
+            # Write to video file if recording
+            if camera_recording and camera_writer is not None:
+                write_camera_frame()
+
+            # Encode as base64 for WebSocket
+            frame_b64 = base64.b64encode(frame_data).decode('utf-8')
+            message = json.dumps({
+                "type": "camera_frame",
+                "frame": frame_b64,
+                "timestamp": time.time()
+            })
+
+            # Send to all camera clients
+            disconnected = set()
+            for client in camera_clients.copy():
+                try:
+                    await client.send_text(message)
+                except Exception:
+                    disconnected.add(client)
+
+            for client in disconnected:
+                camera_clients.discard(client)
+
+            # Calculate FPS
+            current_time = time.time()
+            if current_time - last_time >= 1.0:
+                stats["camera_fps"] = camera_frame_count - last_frame_count
+                last_frame_count = camera_frame_count
+                last_time = current_time
+
+            # Wait for next frame
+            await asyncio.sleep(frame_interval)
+
+        except Exception as e:
+            print(f"[Camera] Error: {e}")
+            await asyncio.sleep(0.1)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown events."""
@@ -256,6 +570,7 @@ async def lifespan(app: FastAPI):
     # Start background tasks
     broadcast_task = asyncio.create_task(broadcast_worker())
     stats_task = asyncio.create_task(stats_worker())
+    camera_task = asyncio.create_task(camera_worker())
 
     add_log("Server started")
 
@@ -264,6 +579,8 @@ async def lifespan(app: FastAPI):
     # Cleanup
     broadcast_task.cancel()
     stats_task.cancel()
+    camera_task.cancel()
+    stop_camera()
     transport.close()
 
 
@@ -331,10 +648,10 @@ async def stop_streaming():
 
 
 @app.post("/record/start")
-async def start_recording(subject: str = "", notes: str = ""):
+async def start_recording(subject: str = "", notes: str = "", include_video: bool = True):
     """Start recording EEG data to CSV file with metadata."""
     global recording_active, recording_file, recording_handle, recording_dir
-    global recording_session_id, recording_start_time, recording_metadata
+    global recording_session_id, recording_start_time, recording_metadata, recording_part
 
     if recording_active:
         return {"status": "error", "message": "Already recording"}
@@ -347,6 +664,9 @@ async def start_recording(subject: str = "", notes: str = ""):
     recording_session_id = timestamp.strftime("%Y%m%d_%H%M%S")
     recording_dir = RECORDINGS_DIR / recording_session_id
     recording_dir.mkdir(exist_ok=True)
+
+    # Reset part counter
+    recording_part = 0
 
     # Create CSV file
     csv_path = recording_dir / "data.csv"
@@ -370,8 +690,16 @@ async def start_recording(subject: str = "", notes: str = ""):
         "channels": 8,
         "subject": subject,
         "notes": notes,
-        "markers": []
+        "markers": [],
+        "has_video": False
     }
+
+    # Start video recording if camera is active
+    if include_video and camera_active:
+        video_path = recording_dir / "video.avi"
+        if start_camera_recording(video_path, CAMERA_FRAME_RATE):
+            recording_metadata["has_video"] = True
+            recording_metadata["video_fps"] = CAMERA_FRAME_RATE
 
     recording_active = True
     stats["recording"] = True
@@ -382,7 +710,8 @@ async def start_recording(subject: str = "", notes: str = ""):
     return {
         "status": "ok",
         "message": "Recording started",
-        "session_id": recording_session_id
+        "session_id": recording_session_id,
+        "has_video": recording_metadata["has_video"]
     }
 
 
@@ -390,13 +719,21 @@ async def start_recording(subject: str = "", notes: str = ""):
 async def stop_recording():
     """Stop recording and save metadata."""
     global recording_active, recording_file, recording_handle, recording_dir
-    global recording_session_id, recording_metadata
+    global recording_session_id, recording_metadata, recording_part
 
     if not recording_active:
         return {"status": "error", "message": "Not recording"}
 
     recording_active = False
     stats["recording"] = False
+
+    # Stop video recording if active
+    if camera_recording:
+        stop_camera_recording()
+        # Get video file size if exists
+        video_path = recording_dir / "video.avi"
+        if video_path.exists():
+            recording_metadata["video_size_mb"] = round(video_path.stat().st_size / (1024 * 1024), 2)
 
     # Close CSV file
     if recording_handle:
@@ -412,6 +749,7 @@ async def stop_recording():
     recording_metadata["end_time"] = datetime.now().isoformat()
     recording_metadata["duration_s"] = round(duration, 2)
     recording_metadata["total_samples"] = samples
+    recording_metadata["total_parts"] = recording_part + 1
 
     # Write metadata JSON
     if recording_dir:
@@ -427,7 +765,8 @@ async def stop_recording():
         "message": "Recording stopped",
         "session_id": session_id,
         "samples": samples,
-        "duration_s": round(duration, 2)
+        "duration_s": round(duration, 2),
+        "has_video": recording_metadata.get("has_video", False)
     }
 
 
@@ -585,6 +924,120 @@ async def delete_recording(session_id: str):
         return {"status": "ok", "message": "Recording deleted"}
 
     return {"status": "error", "message": "Recording not found"}
+
+
+# ============== Camera Endpoints ==============
+
+@app.get("/cameras")
+async def list_cameras():
+    """List available USB cameras."""
+    cameras = detect_cameras()
+    return {
+        "cameras": cameras,
+        "active": camera_active,
+        "recording": camera_recording
+    }
+
+
+@app.post("/camera/start")
+async def api_start_camera(
+    camera_index: int = 0,
+    width: int = 640,
+    height: int = 480
+):
+    """Start camera capture."""
+    if camera_active:
+        return {"status": "error", "message": "Camera already active"}
+
+    success = start_camera(camera_index, width, height)
+    if success:
+        return {"status": "ok", "message": "Camera started"}
+    return {"status": "error", "message": "Failed to start camera"}
+
+
+@app.post("/camera/stop")
+async def api_stop_camera():
+    """Stop camera capture."""
+    stop_camera()
+    return {"status": "ok", "message": "Camera stopped"}
+
+
+@app.get("/camera/snapshot")
+async def camera_snapshot():
+    """Get a single camera frame as JPEG."""
+    if not camera_active:
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "message": "Camera not active"}
+        )
+
+    frame = get_camera_frame()
+    if frame is None:
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "message": "Failed to capture frame"}
+        )
+
+    from fastapi.responses import Response
+    return Response(content=frame, media_type="image/jpeg")
+
+
+@app.websocket("/ws/camera")
+async def camera_websocket(websocket: WebSocket):
+    """WebSocket endpoint for camera streaming."""
+    await websocket.accept()
+    camera_clients.add(websocket)
+
+    client_ip = websocket.client.host if websocket.client else "unknown"
+    add_log(f"Camera client connected: {client_ip}")
+
+    # Send initial status
+    await websocket.send_json({
+        "type": "camera_status",
+        "active": camera_active,
+        "recording": camera_recording
+    })
+
+    try:
+        while True:
+            # Wait for messages (camera control commands)
+            try:
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=30)
+                cmd = json.loads(data)
+
+                if cmd.get("action") == "start":
+                    idx = cmd.get("camera_index", 0)
+                    w = cmd.get("width", 640)
+                    h = cmd.get("height", 480)
+                    success = start_camera(idx, w, h)
+                    await websocket.send_json({
+                        "type": "camera_status",
+                        "active": success,
+                        "recording": camera_recording
+                    })
+
+                elif cmd.get("action") == "stop":
+                    stop_camera()
+                    await websocket.send_json({
+                        "type": "camera_status",
+                        "active": False,
+                        "recording": False
+                    })
+
+            except asyncio.TimeoutError:
+                # Send keepalive
+                try:
+                    await websocket.send_json({"type": "ping"})
+                except Exception:
+                    break
+
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        print(f"[Camera WS] Error: {e}")
+    finally:
+        camera_clients.discard(websocket)
+        add_log(f"Camera client disconnected: {client_ip}")
 
 
 @app.websocket("/ws")

@@ -175,6 +175,37 @@ check_environment() {
     load_config
 }
 
+# Kill orphan/stale processes
+kill_stale_processes() {
+    local silent=${1:-false}
+
+    # Kill any orphan uvicorn/server.py processes on port 8000
+    local stale_backend=$(lsof -ti:8000 2>/dev/null)
+    if [ -n "$stale_backend" ]; then
+        [ "$silent" = false ] && print_warn "Found stale backend process(es) on port 8000, killing..."
+        echo "$stale_backend" | xargs kill -9 2>/dev/null
+        rm -f "$BACKEND_PID"
+        [ "$silent" = false ] && print_ok "Stale backend processes killed"
+    fi
+
+    # Kill any orphan vite/npm processes on port 3000
+    local stale_frontend=$(lsof -ti:3000 2>/dev/null)
+    if [ -n "$stale_frontend" ]; then
+        [ "$silent" = false ] && print_warn "Found stale frontend process(es) on port 3000, killing..."
+        echo "$stale_frontend" | xargs kill -9 2>/dev/null
+        rm -f "$FRONTEND_PID"
+        [ "$silent" = false ] && print_ok "Stale frontend processes killed"
+    fi
+
+    # Also check for orphan python server.py processes
+    local orphan_py=$(pgrep -f "python.*server.py" 2>/dev/null)
+    if [ -n "$orphan_py" ]; then
+        [ "$silent" = false ] && print_warn "Found orphan Python server processes, killing..."
+        echo "$orphan_py" | xargs kill -9 2>/dev/null
+        [ "$silent" = false ] && print_ok "Orphan Python processes killed"
+    fi
+}
+
 # Check if process is running
 is_running() {
     local pid_file=$1
@@ -243,8 +274,8 @@ print_menu() {
     echo -e "  ${CYAN}2${NC}) Stop All          ${CYAN}6${NC}) Stop Frontend"
     echo -e "  ${CYAN}3${NC}) Restart All       ${CYAN}7${NC}) View Backend Logs"
     echo -e "  ${CYAN}4${NC}) Start Backend     ${CYAN}8${NC}) View Frontend Logs"
-    echo -e "  ${CYAN}9${NC}) Install Deps      ${CYAN}s${NC}) Setup Python Env"
-    echo -e "                         ${CYAN}0${NC}) Exit"
+    echo -e "  ${CYAN}9${NC}) Install Deps      ${CYAN}k${NC}) Kill Stale Processes"
+    echo -e "  ${CYAN}s${NC}) Setup Python Env  ${CYAN}0${NC}) Exit"
     echo "─────────────────────────────────────────────────────────────"
     echo ""
 }
@@ -270,6 +301,14 @@ start_backend() {
     if is_running "$BACKEND_PID"; then
         print_warn "Backend already running"
         return 1
+    fi
+
+    # Kill any stale processes on port 8000
+    local stale=$(lsof -ti:8000 2>/dev/null)
+    if [ -n "$stale" ]; then
+        print_warn "Port 8000 in use, killing stale process..."
+        echo "$stale" | xargs kill -9 2>/dev/null
+        sleep 1
     fi
 
     print_msg "Starting backend..."
@@ -301,6 +340,14 @@ start_frontend() {
     if is_running "$FRONTEND_PID"; then
         print_warn "Frontend already running"
         return 1
+    fi
+
+    # Kill any stale processes on port 3000
+    local stale=$(lsof -ti:3000 2>/dev/null)
+    if [ -n "$stale" ]; then
+        print_warn "Port 3000 in use, killing stale process..."
+        echo "$stale" | xargs kill -9 2>/dev/null
+        sleep 1
     fi
 
     print_msg "Starting frontend..."
@@ -401,6 +448,9 @@ wait_key() {
 
 # Main loop
 main() {
+    # Kill any stale processes on startup
+    kill_stale_processes true
+
     # Check environment on startup
     check_environment
 
@@ -450,6 +500,10 @@ main() {
                 ;;
             9)
                 install_deps
+                wait_key
+                ;;
+            k|K)
+                kill_stale_processes false
                 wait_key
                 ;;
             s|S)

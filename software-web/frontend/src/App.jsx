@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import EEGChart from './components/EEGChart'
 import RecordingsTab from './components/RecordingsTab'
+import CameraPanel from './components/CameraPanel'
 
 const WS_URL = 'ws://localhost:8000/ws'
 const API_URL = 'http://localhost:8000'
@@ -31,6 +32,8 @@ function App() {
   const [systemLogs, setSystemLogs] = useState([])
   const [serverStats, setServerStats] = useState(null)
   const [statusExpanded, setStatusExpanded] = useState(false)
+  const [cameraActive, setCameraActive] = useState(false)
+  const [cameraRecording, setCameraRecording] = useState(false)
 
   const wsRef = useRef(null)
   const recordingTimerRef = useRef(null)
@@ -302,6 +305,11 @@ function App() {
     return date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
   }
 
+  const handleCameraStatusChange = (active, recording) => {
+    setCameraActive(active)
+    setCameraRecording(recording)
+  }
+
   return (
     <div className="app">
       <header className="header">
@@ -378,20 +386,6 @@ function App() {
               )}
             </div>
 
-            <div className="stats">
-              <span className="stat">
-                <label>Samples</label>
-                <value>{stats.samples.toLocaleString()}</value>
-              </span>
-              <span className="stat">
-                <label>Rate</label>
-                <value>{stats.rate} Hz</value>
-              </span>
-              <span className="stat">
-                <label>Target</label>
-                <value>{config.sample_rate} Hz</value>
-              </span>
-            </div>
           </div>
 
           <div className="channel-selector">
@@ -407,68 +401,93 @@ function App() {
             ))}
           </div>
 
-          {/* System Status Panel */}
-          <div className="status-panel">
-            <div
-              className="status-panel-header"
-              onClick={() => setStatusExpanded(!statusExpanded)}
-            >
-              <h3>
-                <span>System Status</span>
-              </h3>
-              <span className={`toggle-icon ${statusExpanded ? 'expanded' : ''}`}>
-                {statusExpanded ? '▲' : '▼'}
-              </span>
-            </div>
-            <div className={`status-panel-content ${statusExpanded ? 'expanded' : ''}`}>
-              <div className="status-indicators">
-                <div className="status-indicator">
-                  <span className={`dot ${wsConnected ? 'green' : 'red'}`}></span>
-                  <span className="label">Backend:</span>
-                  <span className="value">{wsConnected ? 'Connected' : 'Disconnected'}</span>
-                </div>
-                <div className="status-indicator">
-                  <span className={`dot ${receiving ? 'green' : streaming ? 'yellow' : 'gray'}`}></span>
-                  <span className="label">ESP32:</span>
-                  <span className="value">{receiving ? 'Receiving' : streaming ? 'Waiting' : 'Stopped'}</span>
-                </div>
-                {serverStats && (
-                  <div className="status-indicator">
-                    <span className="label">Samples:</span>
-                    <span className="value">{serverStats.samples_received?.toLocaleString()}</span>
-                  </div>
-                )}
-              </div>
-              <div className="log-entries">
-                {systemLogs.length === 0 ? (
-                  <div className="log-empty">No events recorded</div>
-                ) : (
-                  [...systemLogs].reverse().slice(0, 20).map((log, idx) => (
-                    <div key={idx} className={`log-entry ${log.level}`}>
-                      <span className="log-time">{formatLogTime(log.time)}</span>
-                      <span className="log-event">{log.event}</span>
-                    </div>
-                  ))
-                )}
+          {/* Main content area with two columns */}
+          <div className="live-content">
+            {/* Left column: EEG Charts */}
+            <div className="eeg-column">
+              <div className="charts-grid">
+                {selectedChannels.map(ch => (
+                  <EEGChart
+                    key={ch}
+                    channelIndex={ch}
+                    data={channelData[ch]}
+                    streaming={streaming}
+                    autoZoom={autoZoom[ch]}
+                    zoomLevel={zoomLevel[ch]}
+                    onToggleAutoZoom={() => toggleAutoZoom(ch)}
+                    onZoomIn={() => zoomIn(ch)}
+                    onZoomOut={() => zoomOut(ch)}
+                    onResetZoom={() => resetZoom(ch)}
+                  />
+                ))}
               </div>
             </div>
-          </div>
 
-          <div className="charts-grid">
-            {selectedChannels.map(ch => (
-              <EEGChart
-                key={ch}
-                channelIndex={ch}
-                data={channelData[ch]}
-                streaming={streaming}
-                autoZoom={autoZoom[ch]}
-                zoomLevel={zoomLevel[ch]}
-                onToggleAutoZoom={() => toggleAutoZoom(ch)}
-                onZoomIn={() => zoomIn(ch)}
-                onZoomOut={() => zoomOut(ch)}
-                onResetZoom={() => resetZoom(ch)}
-              />
-            ))}
+            {/* Right column: Camera + Status */}
+            <div className="side-column">
+              {/* Camera Panel */}
+              <CameraPanel onCameraStatusChange={handleCameraStatusChange} />
+
+              {/* System Status Panel */}
+              <div className="status-panel">
+                <div
+                  className="status-panel-header"
+                  onClick={() => setStatusExpanded(!statusExpanded)}
+                >
+                  <h3>
+                    <span>System Status</span>
+                  </h3>
+                  <span className={`toggle-icon ${statusExpanded ? 'expanded' : ''}`}>
+                    {statusExpanded ? '▲' : '▼'}
+                  </span>
+                </div>
+                <div className={`status-panel-content ${statusExpanded ? 'expanded' : ''}`}>
+                  <div className="status-stats">
+                    <div className="status-stat">
+                      <span className="stat-value">{stats.samples.toLocaleString()}</span>
+                      <span className="stat-label">Samples</span>
+                    </div>
+                    <div className="status-stat">
+                      <span className="stat-value">{stats.rate} Hz</span>
+                      <span className="stat-label">Rate</span>
+                    </div>
+                    <div className="status-stat">
+                      <span className="stat-value">{config.sample_rate} Hz</span>
+                      <span className="stat-label">Target</span>
+                    </div>
+                  </div>
+                  <div className="status-indicators">
+                    <div className="status-indicator">
+                      <span className={`dot ${wsConnected ? 'green' : 'red'}`}></span>
+                      <span className="label">Backend:</span>
+                      <span className="value">{wsConnected ? 'Connected' : 'Disconnected'}</span>
+                    </div>
+                    <div className="status-indicator">
+                      <span className={`dot ${receiving ? 'green' : streaming ? 'yellow' : 'gray'}`}></span>
+                      <span className="label">ESP32:</span>
+                      <span className="value">{receiving ? 'Receiving' : streaming ? 'Waiting' : 'Stopped'}</span>
+                    </div>
+                    <div className="status-indicator">
+                      <span className={`dot ${cameraActive ? 'green' : 'gray'}`}></span>
+                      <span className="label">Camera:</span>
+                      <span className="value">{cameraActive ? (cameraRecording ? 'Recording' : 'Active') : 'Off'}</span>
+                    </div>
+                  </div>
+                  <div className="log-entries">
+                    {systemLogs.length === 0 ? (
+                      <div className="log-empty">No events recorded</div>
+                    ) : (
+                      [...systemLogs].reverse().slice(0, 20).map((log, idx) => (
+                        <div key={idx} className={`log-entry ${log.level}`}>
+                          <span className="log-time">{formatLogTime(log.time)}</span>
+                          <span className="log-event">{log.event}</span>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </>
       ) : (
