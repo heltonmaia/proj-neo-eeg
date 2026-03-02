@@ -82,6 +82,9 @@ body {
   display: flex;
   align-items: center;
   gap: 12px;
+  /* Fixed width to prevent layout shift */
+  min-width: 320px;
+  justify-content: flex-end;
 }
 
 .connection-status {
@@ -114,55 +117,76 @@ body {
   width: 10px;
   height: 10px;
   border-radius: 50%;
+  transition: background-color 0.3s ease, box-shadow 0.3s ease;
 }
 
-.connection-status.connected .indicator {
+.connection-status .indicator.connected {
   background-color: var(--accent-green);
   box-shadow: 0 0 8px var(--accent-green);
+  animation: pulse-green 2s ease-in-out infinite;
 }
 
-.connection-status.waiting .indicator {
+.connection-status .indicator.waiting {
   background-color: var(--accent-yellow);
-  animation: blink 1s infinite;
+  animation: pulse-yellow 1s ease-in-out infinite;
 }
 
-.connection-status.disconnected .indicator {
+.connection-status .indicator.disconnected {
   background-color: var(--accent-red);
 }
 
-@keyframes blink {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
+@keyframes pulse-green {
+  0%, 100% { box-shadow: 0 0 4px var(--accent-green); }
+  50% { box-shadow: 0 0 12px var(--accent-green); }
 }
 
-.live-badge {
-  font-size: 0.7rem;
-  font-weight: 700;
-  padding: 4px 10px;
-  background: linear-gradient(135deg, #f85149, #da3633);
-  border-radius: 4px;
-  animation: pulse 1.5s infinite;
-  letter-spacing: 1px;
+@keyframes pulse-yellow {
+  0%, 100% { opacity: 1; box-shadow: 0 0 4px var(--accent-yellow); }
+  50% { opacity: 0.5; box-shadow: 0 0 8px var(--accent-yellow); }
 }
 
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.6; }
-}
-
+.live-badge,
 .rec-badge {
   font-size: 0.7rem;
   font-weight: 700;
   padding: 4px 10px;
-  background: linear-gradient(135deg, #f85149, #b62324);
   border-radius: 4px;
-  animation: rec-pulse 1s infinite;
   letter-spacing: 1px;
+  text-align: center;
+  transition: opacity 0.3s ease, box-shadow 0.3s ease;
 }
 
-@keyframes rec-pulse {
-  0%, 100% { opacity: 1; box-shadow: 0 0 8px #f85149; }
-  50% { opacity: 0.8; box-shadow: 0 0 4px #f85149; }
+.live-badge {
+  background: linear-gradient(135deg, #f85149, #da3633);
+  min-width: 45px;
+}
+
+.rec-badge {
+  background: linear-gradient(135deg, #f85149, #b62324);
+  min-width: 75px;
+}
+
+/* Visibility states */
+.live-badge.visible,
+.rec-badge.visible {
+  opacity: 1;
+  animation: badge-glow 2s ease-in-out infinite;
+}
+
+.live-badge.hidden,
+.rec-badge.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Smooth glow animation - no layout shift */
+@keyframes badge-glow {
+  0%, 100% {
+    box-shadow: 0 0 4px rgba(248, 81, 73, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 12px rgba(248, 81, 73, 0.8);
+  }
 }
 
 /* Tabs */
@@ -222,6 +246,7 @@ body {
   gap: 4px;
   font-size: 0.8rem;
   padding: 6px 10px;
+  transition: opacity 0.3s ease, color 0.3s ease;
   background-color: var(--bg-tertiary);
   border: 1px solid var(--border-color);
   border-radius: 4px;

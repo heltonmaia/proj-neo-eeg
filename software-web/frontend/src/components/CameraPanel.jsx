@@ -3,7 +3,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 const API_URL = 'http://localhost:8000'
 const WS_CAMERA_URL = 'ws://localhost:8000/ws/camera'
 
-function CameraPanel({ onCameraStatusChange }) {
+function CameraPanel({ onCameraStatusChange, recordingVideo = false }) {
   const [cameras, setCameras] = useState([])
   const [selectedCamera, setSelectedCamera] = useState(0)
   const [selectedResolution, setSelectedResolution] = useState('640x480')
@@ -222,7 +222,9 @@ function CameraPanel({ onCameraStatusChange }) {
           ) : (
             <button
               onClick={stopCamera}
+              disabled={recordingVideo}
               className="btn btn-camera-stop"
+              title={recordingVideo ? 'Stop recording first' : ''}
             >
               Stop Camera
             </button>

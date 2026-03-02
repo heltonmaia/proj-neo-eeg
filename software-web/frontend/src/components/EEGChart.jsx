@@ -1,5 +1,5 @@
 import { memo, useMemo } from 'react'
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, ResponsiveContainer, ReferenceLine } from 'recharts'
+import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, ReferenceLine } from 'recharts'
 
 const CHANNEL_COLORS = [
   '#f85149', // CH1 - Red
@@ -103,7 +103,6 @@ const EEGChart = memo(function EEGChart({
 
       <ResponsiveContainer width="100%" height={100}>
         <LineChart data={data} margin={{ top: 5, right: 10, bottom: 5, left: 0 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#30363d" />
           <XAxis dataKey="x" hide />
           <YAxis
             domain={yDomain}

@@ -189,6 +189,15 @@ function App() {
     return () => clearInterval(interval)
   }, [])
 
+  // Determine if REC button should be enabled
+  const canRecord = () => {
+    // At least one source must be active and selected
+    // Use streaming (more stable) for signals check
+    const signalsReady = streaming && recordSignals
+    const videoReady = cameraActive && recordVideo
+    return signalsReady || videoReady
+  }
+
   const handleStart = () => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ action: 'start' }))
@@ -212,12 +221,19 @@ function App() {
   }
 
   const handleStartRecording = async () => {
-    if (!recordSignals && !recordVideo) return
+    // Use streaming (more stable) instead of receiving for signals check
+    // receiving can fluctuate momentarily
+    const shouldRecordSignals = recordSignals && streaming
+    const shouldRecordVideo = recordVideo && cameraActive
+
+    if (!shouldRecordSignals && !shouldRecordVideo) return
+
     try {
-      const params = new URLSearchParams({
-        include_video: recordVideo && cameraActive ? 'true' : 'false',
-        channels: selectedChannels.join(',')
-      })
+      const params = new URLSearchParams()
+      params.append('include_video', shouldRecordVideo)
+      params.append('include_signals', shouldRecordSignals)
+      params.append('channels', selectedChannels.join(','))
+
       const res = await fetch(`${API_URL}/record/start?${params}`, { method: 'POST' })
       if (res.ok) {
         setRecording(true)
@@ -322,12 +338,12 @@ function App() {
       <header className="header">
         <h1>Potyplex EEG <span className="app-variant">(web)</span></h1>
         <div className="status-bar">
-          <div className={`connection-status ${receiving ? 'connected' : wsConnected ? 'waiting' : 'disconnected'}`}>
-            <span className="indicator" />
-            {receiving ? 'ESP32 Connected' : wsConnected ? 'Waiting ESP32' : 'Disconnected'}
+          <div className="connection-status">
+            <span className={`indicator ${receiving ? 'connected' : wsConnected ? 'waiting' : 'disconnected'}`} />
+            <span>ESP32</span>
           </div>
-          {streaming && receiving && <div className="live-badge">LIVE</div>}
-          {recording && <div className="rec-badge">REC {formatRecordingTime(recordingTime)}</div>}
+          <div className={`live-badge ${streaming && receiving ? 'visible' : 'hidden'}`}>LIVE</div>
+          <div className={`rec-badge ${recording ? 'visible' : 'hidden'}`}>REC {formatRecordingTime(recordingTime)}</div>
           <button className="theme-toggle" onClick={toggleTheme} title="Toggle theme">
             {theme === 'dark' ? '☀️' : '🌙'}
           </button>
@@ -363,8 +379,9 @@ function App() {
               </button>
               <button
                 onClick={handleStop}
-                disabled={!wsConnected || !streaming}
+                disabled={!wsConnected || !streaming || (recording && recordSignals)}
                 className="btn btn-stop"
+                title={(recording && recordSignals) ? 'Stop recording first' : ''}
               >
                 ⬛ Stop
               </button>
@@ -378,30 +395,31 @@ function App() {
 
             <div className="recording-controls">
               <div className="recording-options">
-                <label className={`rec-option ${recording ? 'disabled' : ''}`}>
+                <label className={`rec-option ${recording ? 'disabled' : ''} ${!streaming ? 'unavailable' : ''}`} title={!streaming ? 'Start signals first' : ''}>
                   <input
                     type="checkbox"
                     checked={recordSignals}
                     onChange={(e) => setRecordSignals(e.target.checked)}
-                    disabled={recording}
+                    disabled={recording || !streaming}
                   />
                   <span>Signals</span>
                 </label>
-                <label className={`rec-option ${recording ? 'disabled' : ''} ${!cameraActive ? 'unavailable' : ''}`}>
+                <label className={`rec-option ${recording ? 'disabled' : ''} ${!cameraActive ? 'unavailable' : ''}`} title={!cameraActive ? 'Start camera first' : ''}>
                   <input
                     type="checkbox"
                     checked={recordVideo}
                     onChange={(e) => setRecordVideo(e.target.checked)}
-                    disabled={recording}
+                    disabled={recording || !cameraActive}
                   />
-                  <span>Video {!cameraActive && '(off)'}</span>
+                  <span>Video</span>
                 </label>
               </div>
               {!recording ? (
                 <button
                   onClick={handleStartRecording}
-                  disabled={!receiving || (!recordSignals && !recordVideo)}
+                  disabled={!canRecord()}
                   className="btn btn-rec"
+                  title={!canRecord() ? 'Start signals or camera first, then select what to record' : 'Start recording'}
                 >
                   ● REC
                 </button>
@@ -441,7 +459,10 @@ function App() {
             {/* Right column: Camera + Quick Info */}
             <div className="side-column">
               {/* Camera Panel */}
-              <CameraPanel onCameraStatusChange={handleCameraStatusChange} />
+              <CameraPanel
+                onCameraStatusChange={handleCameraStatusChange}
+                recordingVideo={recording && recordVideo}
+              />
 
               {/* Quick Info Panel (always visible, compact) */}
               <div className="quick-info-panel">

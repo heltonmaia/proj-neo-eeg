@@ -414,9 +414,10 @@ class EEGProtocol(asyncio.DatagramProtocol):
 
                 # Periodic flush to prevent data loss
                 if stats["recording_samples"] % FLUSH_INTERVAL == 0:
-                    recording_handle.flush()
-                    # Check if rotation is needed
-                    check_recording_rotation()
+                    if recording_handle:
+                        recording_handle.flush()
+                        # Check if rotation is needed
+                        check_recording_rotation()
 
             # Debug: log every 250 samples (once per second)
             if stats["samples_received"] % 250 == 0:
@@ -651,14 +652,26 @@ async def stop_streaming():
 
 
 @app.post("/record/start")
-async def start_recording(subject: str = "", notes: str = "", include_video: bool = True, channels: str = "0,1,2,3,4,5,6,7"):
-    """Start recording EEG data to CSV file with metadata."""
+async def start_recording(
+    subject: str = "",
+    notes: str = "",
+    include_video: bool = True,
+    include_signals: bool = True,
+    channels: str = "0,1,2,3,4,5,6,7"
+):
+    """Start recording EEG data and/or video with metadata."""
     global recording_active, recording_file, recording_handle, recording_dir
     global recording_session_id, recording_start_time, recording_metadata, recording_part
     global recording_channels
 
+    print(f"[RECORD] Start request: include_video={include_video}, include_signals={include_signals}, channels={channels}")
+
     if recording_active:
         return {"status": "error", "message": "Already recording"}
+
+    # At least one source must be enabled
+    if not include_signals and not include_video:
+        return {"status": "error", "message": "No recording source selected"}
 
     # Parse channels parameter (comma-separated indices)
     try:
@@ -681,50 +694,70 @@ async def start_recording(subject: str = "", notes: str = "", include_video: boo
     # Reset part counter
     recording_part = 0
 
-    # Create CSV file
-    csv_path = recording_dir / "data.csv"
-    recording_handle = open(csv_path, 'w', newline='')
-    recording_file = csv.writer(recording_handle)
-
-    # Write header with only selected channels
-    header = ['sample_index', 'time_s', 'packet_num']
-    for ch in recording_channels:
-        header.append(f'ch{ch+1}_uv')
-    header.extend(['accel_x', 'accel_y', 'accel_z'])
-    recording_file.writerow(header)
-
     # Initialize metadata
     recording_start_time = time.time()
     recording_metadata = {
         "session_id": recording_session_id,
         "start_time": timestamp.isoformat(),
         "sample_rate": SAMPLE_RATE,
-        "channels": len(recording_channels),
-        "channel_indices": recording_channels,
+        "channels": len(recording_channels) if include_signals else 0,
+        "channel_indices": recording_channels if include_signals else [],
         "subject": subject,
         "notes": notes,
         "markers": [],
-        "has_video": False
+        "has_video": False,
+        "has_signals": include_signals
     }
+
+    # Create CSV file only if recording signals
+    if include_signals:
+        csv_path = recording_dir / "data.csv"
+        recording_handle = open(csv_path, 'w', newline='')
+        recording_file = csv.writer(recording_handle)
+
+        # Write header with only selected channels
+        header = ['sample_index', 'time_s', 'packet_num']
+        for ch in recording_channels:
+            header.append(f'ch{ch+1}_uv')
+        header.extend(['accel_x', 'accel_y', 'accel_z'])
+        recording_file.writerow(header)
+        print(f"[RECORD] CSV file created: {csv_path}")
+    else:
+        recording_handle = None
+        recording_file = None
+        print("[RECORD] Skipping CSV (signals not included)")
 
     # Start video recording if camera is active
     if include_video and camera_active:
         video_path = recording_dir / "video.avi"
+        print(f"[RECORD] Starting video recording: {video_path}")
         if start_camera_recording(video_path, CAMERA_FRAME_RATE):
             recording_metadata["has_video"] = True
             recording_metadata["video_fps"] = CAMERA_FRAME_RATE
+            print("[RECORD] Video recording started")
+        else:
+            print("[RECORD] Failed to start video recording")
+    else:
+        print(f"[RECORD] Skipping video (include_video={include_video}, camera_active={camera_active})")
 
     recording_active = True
     stats["recording"] = True
     stats["recording_samples"] = 0
     stats["recording_file"] = recording_session_id
 
-    add_log(f"Recording started: {recording_session_id}")
+    sources = []
+    if include_signals:
+        sources.append("signals")
+    if recording_metadata["has_video"]:
+        sources.append("video")
+    add_log(f"Recording started: {recording_session_id} ({', '.join(sources)})")
+
     return {
         "status": "ok",
         "message": "Recording started",
         "session_id": recording_session_id,
-        "has_video": recording_metadata["has_video"]
+        "has_video": recording_metadata["has_video"],
+        "has_signals": include_signals
     }
 
 
@@ -771,7 +804,12 @@ async def stop_recording():
             json.dump(recording_metadata, f, indent=2)
 
     session_id = recording_session_id
-    add_log(f"Recording stopped: {session_id} ({samples} samples, {duration:.1f}s)")
+    sources = []
+    if recording_metadata.get("has_signals"):
+        sources.append(f"{samples} samples")
+    if recording_metadata.get("has_video"):
+        sources.append("video")
+    add_log(f"Recording stopped: {session_id} ({', '.join(sources)}, {duration:.1f}s)")
 
     return {
         "status": "ok",
@@ -814,11 +852,20 @@ async def list_recordings():
             if metadata_path.exists():
                 with open(metadata_path) as f:
                     metadata = json.load(f)
+                # Calculate total size (CSV + video)
+                size_kb = 0
                 csv_path = d / "data.csv"
-                size_kb = round(csv_path.stat().st_size / 1024, 1) if csv_path.exists() else 0
+                if csv_path.exists():
+                    size_kb += csv_path.stat().st_size / 1024
+                video_path = d / "video.avi"
+                if video_path.exists():
+                    size_kb += video_path.stat().st_size / 1024
+                mp4_path = d / "video.mp4"
+                if mp4_path.exists():
+                    size_kb += mp4_path.stat().st_size / 1024
                 sessions.append({
                     "session_id": d.name,
-                    "size_kb": size_kb,
+                    "size_kb": round(size_kb, 1),
                     **metadata
                 })
 
@@ -925,10 +972,40 @@ async def download_recording(session_id: str):
 
 @app.get("/recordings/{session_id}/video")
 async def get_recording_video(session_id: str):
-    """Stream recording video file."""
-    video_path = RECORDINGS_DIR / session_id / "video.avi"
-    if video_path.exists():
-        return FileResponse(video_path, media_type="video/x-msvideo", filename=f"{session_id}.avi")
+    """Stream recording video file (converts AVI to MP4 for browser compatibility)."""
+    import subprocess
+
+    avi_path = RECORDINGS_DIR / session_id / "video.avi"
+    mp4_path = RECORDINGS_DIR / session_id / "video.mp4"
+
+    # If MP4 already exists, serve it
+    if mp4_path.exists():
+        return FileResponse(mp4_path, media_type="video/mp4", filename=f"{session_id}.mp4")
+
+    # If AVI exists, try to convert to MP4
+    if avi_path.exists():
+        try:
+            # Try to convert using ffmpeg
+            result = subprocess.run([
+                "ffmpeg", "-y", "-i", str(avi_path),
+                "-c:v", "libx264", "-preset", "fast",
+                "-crf", "23", "-movflags", "+faststart",
+                str(mp4_path)
+            ], capture_output=True, timeout=120)
+
+            if result.returncode == 0 and mp4_path.exists():
+                add_log(f"Video converted to MP4: {session_id}")
+                return FileResponse(mp4_path, media_type="video/mp4", filename=f"{session_id}.mp4")
+        except FileNotFoundError:
+            # ffmpeg not installed, return error with instructions
+            add_log("ffmpeg not found - video conversion unavailable", "warn")
+        except subprocess.TimeoutExpired:
+            add_log(f"Video conversion timeout: {session_id}", "error")
+        except Exception as e:
+            add_log(f"Video conversion failed: {e}", "error")
+
+        # Fallback: return AVI with warning (won't play in browser)
+        return FileResponse(avi_path, media_type="video/x-msvideo", filename=f"{session_id}.avi")
 
     return JSONResponse(status_code=404, content={"status": "error", "message": "Video not found"})
 

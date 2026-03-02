@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, ResponsiveContainer, ReferenceLine } from 'recharts'
+import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, ReferenceLine } from 'recharts'
 
 const API_URL = 'http://localhost:8000'
 
@@ -159,11 +159,13 @@ function RecordingsTab() {
                     <span className="recording-duration">{formatDuration(rec.duration_s)}</span>
                   </div>
                   <div className="recording-meta">
-                    <span className="recording-samples">{rec.total_samples?.toLocaleString() || '--'} samples</span>
+                    <span className="recording-samples">
+                      {rec.has_signals !== false ? `${rec.total_samples?.toLocaleString() || '--'} samples` : 'Video only'}
+                    </span>
                     <span className="recording-size">{rec.size_kb} KB</span>
                   </div>
                   <div className="recording-badges">
-                    {rec.channels && <span className="badge badge-channels">{rec.channels}ch</span>}
+                    {rec.channels > 0 && <span className="badge badge-channels">{rec.channels}ch</span>}
                     {rec.has_video && <span className="badge badge-video">Video</span>}
                   </div>
                   {rec.subject && <div className="recording-subject">{rec.subject}</div>}
@@ -214,82 +216,90 @@ function RecordingsTab() {
                   <h4>Video Recording</h4>
                   <video
                     controls
-                    src={`${API_URL}/recordings/${selectedSession}/video`}
                     className="video-player"
+                    onError={(e) => {
+                      console.error('Video playback error:', e)
+                    }}
                   >
-                    Your browser does not support video playback.
+                    <source src={`${API_URL}/recordings/${selectedSession}/video`} type="video/mp4" />
+                    <source src={`${API_URL}/recordings/${selectedSession}/video`} type="video/x-msvideo" />
+                    Your browser does not support video playback. Try installing ffmpeg on the server.
                   </video>
                 </div>
               )}
 
-              {/* Channel selector */}
-              <div className="channel-selector">
-                {Array(8).fill(null).map((_, i) => (
-                  <label key={i} className={`channel-toggle ${selectedChannels.includes(i) ? 'active' : ''}`}>
-                    <input
-                      type="checkbox"
-                      checked={selectedChannels.includes(i)}
-                      onChange={() => toggleChannel(i)}
-                    />
-                    CH{i + 1}
-                  </label>
-                ))}
-              </div>
-
-              {/* Time navigation */}
-              <div className="time-navigation">
-                <button onClick={() => handleScroll('left')} disabled={timeWindow.start <= 0}>◀</button>
-                <div className="time-info">
-                  <span>{timeWindow.start.toFixed(1)}s - {timeWindow.end.toFixed(1)}s</span>
-                  <span className="time-total">/ {totalDuration.toFixed(1)}s</span>
-                </div>
-                <button onClick={() => handleScroll('right')} disabled={timeWindow.end >= totalDuration}>▶</button>
-                <select value={windowSize} onChange={(e) => handleWindowSizeChange(Number(e.target.value))}>
-                  <option value={5}>5s</option>
-                  <option value={10}>10s</option>
-                  <option value={30}>30s</option>
-                  <option value={60}>60s</option>
-                </select>
-              </div>
-
-              {/* Charts */}
-              <div className="charts-grid">
-                {selectedChannels.map((ch, idx) => (
-                  <div key={ch} className="chart-wrapper">
-                    <div className="chart-header">
-                      <span className="channel-label" style={{ backgroundColor: CHANNEL_COLORS[ch] }}>
-                        CH{ch + 1}
-                      </span>
-                    </div>
-                    <ResponsiveContainer width="100%" height={100}>
-                      <LineChart data={chartData[idx]} margin={{ top: 5, right: 10, bottom: 5, left: 0 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#30363d" />
-                        <XAxis
-                          dataKey="x"
-                          tickFormatter={(v) => v.toFixed(1)}
-                          stroke="#484f58"
-                          tick={{ fontSize: 9, fill: '#8b949e' }}
+              {/* Signal data section - only show if recording has signals */}
+              {sessionData.metadata?.has_signals !== false && sessionData.data?.length > 0 && (
+                <>
+                  {/* Channel selector */}
+                  <div className="channel-selector">
+                    {Array(8).fill(null).map((_, i) => (
+                      <label key={i} className={`channel-toggle ${selectedChannels.includes(i) ? 'active' : ''}`}>
+                        <input
+                          type="checkbox"
+                          checked={selectedChannels.includes(i)}
+                          onChange={() => toggleChannel(i)}
                         />
-                        <YAxis
-                          tickFormatter={(v) => v.toFixed(0)}
-                          stroke="#484f58"
-                          width={50}
-                          tick={{ fontSize: 9, fill: '#8b949e' }}
-                        />
-                        <ReferenceLine y={0} stroke="#30363d" />
-                        <Line
-                          type="monotone"
-                          dataKey="y"
-                          stroke={CHANNEL_COLORS[ch]}
-                          strokeWidth={1.2}
-                          dot={false}
-                          isAnimationActive={false}
-                        />
-                      </LineChart>
-                    </ResponsiveContainer>
+                        CH{i + 1}
+                      </label>
+                    ))}
                   </div>
-                ))}
-              </div>
+
+                  {/* Time navigation */}
+                  <div className="time-navigation">
+                    <button onClick={() => handleScroll('left')} disabled={timeWindow.start <= 0}>◀</button>
+                    <div className="time-info">
+                      <span>{timeWindow.start.toFixed(1)}s - {timeWindow.end.toFixed(1)}s</span>
+                      <span className="time-total">/ {totalDuration.toFixed(1)}s</span>
+                    </div>
+                    <button onClick={() => handleScroll('right')} disabled={timeWindow.end >= totalDuration}>▶</button>
+                    <select value={windowSize} onChange={(e) => handleWindowSizeChange(Number(e.target.value))}>
+                      <option value={5}>5s</option>
+                      <option value={10}>10s</option>
+                      <option value={30}>30s</option>
+                      <option value={60}>60s</option>
+                    </select>
+                  </div>
+
+                  {/* Charts */}
+                  <div className="charts-grid">
+                    {selectedChannels.map((ch, idx) => (
+                      <div key={ch} className="chart-wrapper">
+                        <div className="chart-header">
+                          <span className="channel-label" style={{ backgroundColor: CHANNEL_COLORS[ch] }}>
+                            CH{ch + 1}
+                          </span>
+                        </div>
+                        <ResponsiveContainer width="100%" height={100}>
+                          <LineChart data={chartData[idx]} margin={{ top: 5, right: 10, bottom: 5, left: 0 }}>
+                            <XAxis
+                              dataKey="x"
+                              tickFormatter={(v) => v.toFixed(1)}
+                              stroke="#484f58"
+                              tick={{ fontSize: 9, fill: '#8b949e' }}
+                            />
+                            <YAxis
+                              tickFormatter={(v) => v.toFixed(0)}
+                              stroke="#484f58"
+                              width={50}
+                              tick={{ fontSize: 9, fill: '#8b949e' }}
+                            />
+                            <ReferenceLine y={0} stroke="#30363d" />
+                            <Line
+                              type="monotone"
+                              dataKey="y"
+                              stroke={CHANNEL_COLORS[ch]}
+                              strokeWidth={1.2}
+                              dot={false}
+                              isAnimationActive={false}
+                            />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
 
               {/* Markers */}
               {sessionData.metadata?.markers?.length > 0 && (
