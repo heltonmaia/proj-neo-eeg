@@ -41,6 +41,12 @@ npm install
 npm run dev
 ```
 
+**Run tests:**
+```bash
+cd software-web/backend
+pytest test_server.py -v
+```
+
 **Build frontend:**
 ```bash
 cd software-web/frontend
@@ -64,14 +70,15 @@ WiFi config in `EEG_Poty_ESP32_Library_Definitions.h`:
 ### Backend (software-web/backend/server.py)
 - FastAPI with async UDP receiver and WebSocket broadcaster
 - EEG packet parser (24-bit signed channels, converts to microvolts)
-- Recording to CSV with metadata (supports file rotation)
-- USB camera capture with OpenCV
+- Recording to CSV with metadata
+- Video recording to MP4 (mp4v codec) with OpenCV
+- USB camera capture and streaming
 
 ### Frontend (software-web/frontend/src/)
-- `App.jsx`: Main component with tabs (Live/Recordings), WebSocket handling
+- `App.jsx`: Main component with tabs (Live/Recordings), WebSocket handling, recording controls
 - `components/EEGChart.jsx`: Per-channel visualization with zoom controls
-- `components/RecordingsTab.jsx`: Offline recording viewer
-- `components/CameraPanel.jsx`: Camera streaming panel
+- `components/RecordingsTab.jsx`: Offline recording viewer with video playback
+- `components/CameraPanel.jsx`: Camera streaming panel with start/stop controls
 
 ### Data Protocol
 OpenBCI packet (33 bytes):
@@ -87,9 +94,31 @@ OpenBCI packet (33 bytes):
 |--------|----------|-------------|
 | POST | `/start` | Start EEG streaming |
 | POST | `/stop` | Stop EEG streaming |
-| POST | `/record/start` | Start CSV recording |
+| POST | `/record/start` | Start recording (signals and/or video) |
 | POST | `/record/stop` | Stop recording |
 | GET | `/recordings` | List recordings |
+| GET | `/recordings/{id}` | Get recording data |
+| GET | `/recordings/{id}/video` | Stream recording video (MP4) |
+| DELETE | `/recordings/{id}` | Delete recording |
+| GET | `/cameras` | List available cameras |
+| POST | `/camera/start` | Start camera capture |
+| POST | `/camera/stop` | Stop camera capture |
 | GET | `/stats` | Server statistics |
 | WS | `/ws` | EEG data stream |
-| WS | `/ws/camera` | Camera stream |
+| WS | `/ws/camera` | Camera frame stream |
+
+## Recording System
+
+Recordings are stored in `software-web/backend/recordings/` with the following structure:
+```
+recordings/
+└── YYYYMMDD_HHMMSS/
+    ├── metadata.json    # Session metadata
+    ├── data.csv         # EEG signals (if recorded)
+    └── video.mp4        # Video (if recorded)
+```
+
+Recording options:
+- **Signals only**: Records EEG data to CSV
+- **Video only**: Records camera to MP4
+- **Both**: Records signals and video simultaneously

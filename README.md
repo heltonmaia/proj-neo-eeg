@@ -1,6 +1,6 @@
 # Neo-EEG Project
 
-Open-source EEG acquisition system based on ADS1299 and ESP32.
+Open-source 8-channel EEG acquisition system based on ADS1299 and ESP32.
 
 ## Hardware
 
@@ -8,7 +8,7 @@ Open-source EEG acquisition system based on ADS1299 and ESP32.
 |-----------|-------------|
 | MCU | ESP32 |
 | ADC | ADS1299 (8 channels, 24-bit) |
-| Connection | Bluetooth SPP |
+| Connection | WiFi (UDP) or Bluetooth SPP |
 | PCB | PotyEEG v9 |
 
 ## Project Structure
@@ -20,92 +20,82 @@ proj-neo-eeg/
 │   └── troubleshooting.md      # Troubleshooting guide
 │
 ├── firmware/
-│   ├── esp32/                  # ESP32 firmware (Arduino)
-│   │   ├── EEG_Poty_ESP32_V10.ino
-│   │   ├── EEG_Poty_ESP32_Library.cpp
-│   │   ├── EEG_Poty_ESP32_Library.h
-│   │   └── EEG_Poty_ESP32_Library_Definitions.h
+│   ├── esp32-wifi/             # ESP32 WiFi firmware
+│   │   └── EEG_Poty_ESP32_V10/
 │   └── libraries/              # Arduino dependencies
 │
 ├── hardware/
 │   └── pcb/
 │       └── PotyEEG_v9/         # Eagle PCB files
-│           ├── PotyEEG_v9.sch  # Schematic
-│           ├── PotyEEG_v9.brd  # Board layout
-│           ├── PotyEEG_v9_BOM.xlsx
-│           └── *_Gerber.zip    # Manufacturing files
 │
-├── scripts/
-│   └── connect-bluetooth.sh    # Bluetooth connection script
+├── software-web/               # Web application (recommended)
+│   ├── backend/                # FastAPI server
+│   └── frontend/               # React application
 │
-└── software/
-    └── openbci-gui/            # Modified OpenBCI GUI
-        └── OpenBCI_GUI/        # Processing sketch
+└── software-processing/        # OpenBCI GUI (legacy)
+    └── openbci-gui/
 ```
 
-## Quick Start
+## Quick Start (Web Application)
 
-### 1. Flash Firmware (first time only)
+### 1. Flash Firmware
 
 1. Open Arduino IDE
 2. Install ESP32 board support
-3. Copy `firmware/libraries/*` to your Arduino libraries folder
-4. Open `firmware/esp32/EEG_Poty_ESP32_V10.ino`
-5. Select board: ESP32 Dev Module
-6. Upload
+3. Open `firmware/esp32-wifi/EEG_Poty_ESP32_V10/EEG_Poty_ESP32_V10.ino`
+4. Select board: ESP32 Dev Module
+5. Upload
 
-### 2. Connect via Bluetooth
+### 2. Connect to ESP32 WiFi
 
-```bash
-./scripts/connect-bluetooth.sh
-```
+- **SSID:** `Potyplex-EEG`
+- **Password:** `eeg12345`
 
-### 3. Run OpenBCI GUI
+### 3. Run Web Application
 
 ```bash
-./scripts/open-gui.sh
+cd software-web
+./run.sh
 ```
 
-Configure:
-1. **DATA SOURCE**: `CYTON (live)`
-2. **TRANSFER PROTOCOL**: `Serial (from Dongle)`
-3. **SERIAL CONNECT**: `Manual >` → `REFRESH LIST` → Select `/dev/rfcomm0`
-4. Click **START SESSION**
+Open http://localhost:3000
+
+### 4. Use
+
+1. Click **Start** to begin EEG streaming
+2. Click **Start Camera** to enable video (optional)
+3. Select **Signals** and/or **Video** checkboxes
+4. Click **REC** to record
+
+## Features
+
+- Real-time 8-channel EEG visualization
+- USB camera streaming
+- Recording to CSV (signals) and MP4 (video)
+- Offline recording playback
+- Dark/Light theme
+- Channel selection and zoom controls
 
 ## Firmware
 
-The ESP32 firmware implements the OpenBCI Cyton protocol over Bluetooth Serial:
+The ESP32 firmware streams OpenBCI-compatible packets:
 
-- **Protocol**: OpenBCI binary format
+- **Protocol**: OpenBCI binary format (33 bytes)
 - **Sample Rate**: 250 Hz
 - **Channels**: 8 (ADS1299)
-- **Bluetooth**: SPP (Serial Port Profile)
-
-## Hardware Modifications (OpenBCI GUI)
-
-Modified `software/openbci-gui/OpenBCI_GUI/ControlPanel.pde` to support additional serial devices:
-
-```java
-final String[] names = {"FT231X USB UART", "VCP", "USB Serial", "CH340", "ttyUSB", "rfcomm"};
-```
-
-## Troubleshooting
-
-See [docs/troubleshooting.md](docs/troubleshooting.md)
+- **Transport**: UDP over WiFi
 
 ## Dependencies
 
 ### Firmware
 - Arduino IDE 2.x
 - ESP32 Board Support
-- Libraries in `firmware/libraries/`
 
-### Software
-- Processing IDE 4.x
-- Linux: `bluez`, `rfcomm`
-- User in `dialout` group
+### Web Application
+- Python 3.8+
+- Node.js 18+
+- OpenCV (for camera)
 
 ## License
 
-- OpenBCI GUI: MIT License
-- Firmware: See individual library licenses
+MIT License

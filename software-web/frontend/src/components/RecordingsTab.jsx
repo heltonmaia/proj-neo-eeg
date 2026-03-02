@@ -217,13 +217,9 @@ function RecordingsTab() {
                   <video
                     controls
                     className="video-player"
-                    onError={(e) => {
-                      console.error('Video playback error:', e)
-                    }}
+                    src={`${API_URL}/recordings/${selectedSession}/video`}
                   >
-                    <source src={`${API_URL}/recordings/${selectedSession}/video`} type="video/mp4" />
-                    <source src={`${API_URL}/recordings/${selectedSession}/video`} type="video/x-msvideo" />
-                    Your browser does not support video playback. Try installing ffmpeg on the server.
+                    Your browser does not support video playback.
                   </video>
                 </div>
               )}

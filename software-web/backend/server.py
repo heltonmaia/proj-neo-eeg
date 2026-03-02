@@ -229,8 +229,8 @@ def start_camera_recording(output_path: Path, fps: int = 15) -> bool:
         width = int(camera_capture.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(camera_capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-        # Use MJPG codec for better compatibility
-        fourcc = cv2.VideoWriter_fourcc(*'MJPG')
+        # Use mp4v codec for MP4 format (browser compatible)
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         camera_writer = cv2.VideoWriter(str(output_path), fourcc, fps, (width, height))
 
         if not camera_writer.isOpened():
@@ -729,7 +729,7 @@ async def start_recording(
 
     # Start video recording if camera is active
     if include_video and camera_active:
-        video_path = recording_dir / "video.avi"
+        video_path = recording_dir / "video.mp4"
         print(f"[RECORD] Starting video recording: {video_path}")
         if start_camera_recording(video_path, CAMERA_FRAME_RATE):
             recording_metadata["has_video"] = True
@@ -777,7 +777,7 @@ async def stop_recording():
     if camera_recording:
         stop_camera_recording()
         # Get video file size if exists
-        video_path = recording_dir / "video.avi"
+        video_path = recording_dir / "video.mp4"
         if video_path.exists():
             recording_metadata["video_size_mb"] = round(video_path.stat().st_size / (1024 * 1024), 2)
 
@@ -857,7 +857,7 @@ async def list_recordings():
                 csv_path = d / "data.csv"
                 if csv_path.exists():
                     size_kb += csv_path.stat().st_size / 1024
-                video_path = d / "video.avi"
+                video_path = d / "video.mp4"
                 if video_path.exists():
                     size_kb += video_path.stat().st_size / 1024
                 mp4_path = d / "video.mp4"
@@ -972,40 +972,11 @@ async def download_recording(session_id: str):
 
 @app.get("/recordings/{session_id}/video")
 async def get_recording_video(session_id: str):
-    """Stream recording video file (converts AVI to MP4 for browser compatibility)."""
-    import subprocess
+    """Stream recording video file."""
+    video_path = RECORDINGS_DIR / session_id / "video.mp4"
 
-    avi_path = RECORDINGS_DIR / session_id / "video.avi"
-    mp4_path = RECORDINGS_DIR / session_id / "video.mp4"
-
-    # If MP4 already exists, serve it
-    if mp4_path.exists():
-        return FileResponse(mp4_path, media_type="video/mp4", filename=f"{session_id}.mp4")
-
-    # If AVI exists, try to convert to MP4
-    if avi_path.exists():
-        try:
-            # Try to convert using ffmpeg
-            result = subprocess.run([
-                "ffmpeg", "-y", "-i", str(avi_path),
-                "-c:v", "libx264", "-preset", "fast",
-                "-crf", "23", "-movflags", "+faststart",
-                str(mp4_path)
-            ], capture_output=True, timeout=120)
-
-            if result.returncode == 0 and mp4_path.exists():
-                add_log(f"Video converted to MP4: {session_id}")
-                return FileResponse(mp4_path, media_type="video/mp4", filename=f"{session_id}.mp4")
-        except FileNotFoundError:
-            # ffmpeg not installed, return error with instructions
-            add_log("ffmpeg not found - video conversion unavailable", "warn")
-        except subprocess.TimeoutExpired:
-            add_log(f"Video conversion timeout: {session_id}", "error")
-        except Exception as e:
-            add_log(f"Video conversion failed: {e}", "error")
-
-        # Fallback: return AVI with warning (won't play in browser)
-        return FileResponse(avi_path, media_type="video/x-msvideo", filename=f"{session_id}.avi")
+    if video_path.exists():
+        return FileResponse(video_path, media_type="video/mp4", filename=f"{session_id}.mp4")
 
     return JSONResponse(status_code=404, content={"status": "error", "message": "Video not found"})
 

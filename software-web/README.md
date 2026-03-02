@@ -1,6 +1,6 @@
-# Potyplex EEG - Web Viewer
+# Potyplex EEG - Web Application
 
-Real-time EEG visualization using FastAPI + React.
+Real-time EEG visualization and recording using FastAPI + React.
 
 ## Architecture
 
@@ -9,139 +9,135 @@ Real-time EEG visualization using FastAPI + React.
 │   ESP32     │─────────────►│   Backend   │──────────────►│  Frontend   │
 │  (WiFi AP)  │   12345      │  (FastAPI)  │    8000       │   (React)   │
 └─────────────┘              └─────────────┘               └─────────────┘
+                                   │
+                              ┌────┴────┐
+                              │ Camera  │
+                              │ (USB)   │
+                              └─────────┘
 ```
+
+## Features
+
+- Real-time 8-channel EEG visualization
+- USB camera streaming
+- Recording (signals, video, or both)
+- Offline recording playback
+- Dark/Light theme
 
 ## Requirements
 
 - Python 3.8+
 - Node.js 18+
+- OpenCV (for camera support)
 - Modern browser (Chrome, Firefox, Edge)
 
-## Backend (FastAPI)
-
-The backend receives UDP packets from ESP32, parses OpenBCI format, and broadcasts to WebSocket clients.
-
-### Endpoints
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/` | API info |
-| GET | `/stats` | Statistics (samples, packets, clients) |
-| POST | `/start` | Send start command to ESP32 |
-| POST | `/stop` | Send stop command to ESP32 |
-| WS | `/ws` | WebSocket for real-time data |
-
-### Setup
+## Quick Start
 
 ```bash
-cd backend
-pip install -r requirements.txt
-uvicorn server:app --reload --host 0.0.0.0 --port 8000
+./run.sh
 ```
 
-## Frontend (React + Vite)
-
-React application with real-time EEG visualization using Recharts.
-
-### Features
-
-- 8-channel EEG display
-- Channel selection
-- Start/Stop streaming controls
-- Live statistics
-
-### Setup
+Or manually:
 
 ```bash
+# Terminal 1 - Backend
+cd backend
+uvicorn server:app --reload --host 0.0.0.0 --port 8000
+
+# Terminal 2 - Frontend
 cd frontend
 npm install
 npm run dev
 ```
 
-Frontend available at: http://localhost:3000
-
 ## Usage
 
-### 1. Connect to ESP32
+1. Connect to ESP32 WiFi: `Potyplex-EEG` (password: `eeg12345`)
+2. Open http://localhost:3000
+3. Click **Start** to begin EEG streaming
+4. Click **Start Camera** to enable video
+5. Select checkboxes and click **REC** to record
 
-Connect your computer to the ESP32 WiFi network:
-- **SSID:** `Potyplex-EEG`
-- **Password:** `eeg12345`
+## API Endpoints
 
-### 2. Start Backend
-
-```bash
-cd backend
-uvicorn server:app --reload --host 0.0.0.0 --port 8000
-```
-
-### 3. Start Frontend
-
-```bash
-cd frontend
-npm run dev
-```
-
-### 4. View EEG
-
-1. Open http://localhost:3000
-2. Wait for "Connected" status
-3. Click **Start** to begin streaming
-4. Select channels to display
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/start` | Start EEG streaming |
+| POST | `/stop` | Stop EEG streaming |
+| POST | `/record/start` | Start recording |
+| POST | `/record/stop` | Stop recording |
+| GET | `/recordings` | List recordings |
+| GET | `/recordings/{id}` | Get recording data |
+| GET | `/recordings/{id}/video` | Stream video (MP4) |
+| DELETE | `/recordings/{id}` | Delete recording |
+| GET | `/cameras` | List cameras |
+| POST | `/camera/start` | Start camera |
+| POST | `/camera/stop` | Stop camera |
+| WS | `/ws` | EEG data stream |
+| WS | `/ws/camera` | Camera stream |
 
 ## Project Structure
 
 ```
 software-web/
 ├── backend/
-│   ├── server.py          # FastAPI server (UDP + WebSocket)
-│   └── requirements.txt   # Python dependencies
+│   ├── server.py          # FastAPI server
+│   ├── requirements.txt   # Python dependencies
+│   └── recordings/        # Saved recordings
 ├── frontend/
 │   ├── src/
-│   │   ├── main.jsx           # React entry point
-│   │   ├── App.jsx            # Main component
-│   │   ├── App.css            # Styles
+│   │   ├── App.jsx        # Main component
+│   │   ├── App.css        # Styles
 │   │   └── components/
-│   │       └── EEGChart.jsx   # Chart component
-│   ├── index.html
+│   │       ├── EEGChart.jsx       # EEG visualization
+│   │       ├── CameraPanel.jsx    # Camera controls
+│   │       └── RecordingsTab.jsx  # Recording viewer
 │   ├── package.json
 │   └── vite.config.js
+├── run.sh                 # Quick start script
 └── README.md
 ```
+
+## Recording Format
+
+Recordings are stored in `backend/recordings/YYYYMMDD_HHMMSS/`:
+
+- `metadata.json` - Session info (duration, channels, etc.)
+- `data.csv` - EEG signals (if recorded)
+- `video.mp4` - Camera video (if recorded)
 
 ## Data Protocol
 
 ### UDP (ESP32 → Backend)
 
-OpenBCI packet format (33 bytes):
+OpenBCI packet (33 bytes):
 - Byte 0: Header (0xA0)
 - Byte 1: Sample number
-- Bytes 2-25: 8 EEG channels (3 bytes each, 24-bit signed)
-- Bytes 26-31: Accelerometer (3 axes)
+- Bytes 2-25: 8 channels (3 bytes each, 24-bit signed)
+- Bytes 26-31: Accelerometer
 - Byte 32: Footer (0xC0)
 
 ### WebSocket (Backend → Frontend)
 
-JSON format:
 ```json
 {
-  "sample": 123,
-  "channels": [12.34, -5.67, ...],
-  "accel": [100, -50, 980]
+  "type": "batch",
+  "samples": [
+    {"s": 1, "c": [1.2, -3.4, ...], "a": [100, -50, 980]}
+  ]
 }
 ```
 
 ## Troubleshooting
 
-### Backend not receiving data
-- Verify connection to ESP32 WiFi network
-- Confirm ESP32 is streaming (LED blinking)
-- Test with: `nc -u 192.168.4.1 12345` → type `b`
+**Backend not receiving data:**
+- Verify connection to ESP32 WiFi
+- Check ESP32 LED is blinking
 
-### Frontend not connecting
-- Verify backend is running on port 8000
-- Check browser console (F12) for errors
+**Camera not working:**
+- Check USB camera is connected
+- Verify OpenCV is installed: `pip install opencv-python`
 
-### Slow charts
-- Reduce number of visible channels
-- Close other browser tabs
+**Video not playing:**
+- Recordings use MP4 format (mp4v codec)
+- Supported by all modern browsers

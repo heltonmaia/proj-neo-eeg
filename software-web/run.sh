@@ -274,8 +274,9 @@ print_menu() {
     echo -e "  ${CYAN}2${NC}) Stop All          ${CYAN}6${NC}) Stop Frontend"
     echo -e "  ${CYAN}3${NC}) Restart All       ${CYAN}7${NC}) View Backend Logs"
     echo -e "  ${CYAN}4${NC}) Start Backend     ${CYAN}8${NC}) View Frontend Logs"
-    echo -e "  ${CYAN}9${NC}) Install Deps      ${CYAN}k${NC}) Kill Stale Processes"
-    echo -e "  ${CYAN}s${NC}) Setup Python Env  ${CYAN}0${NC}) Exit"
+    echo -e "  ${CYAN}9${NC}) Install Deps      ${CYAN}t${NC}) Run Tests"
+    echo -e "  ${CYAN}s${NC}) Setup Python Env  ${CYAN}k${NC}) Kill Stale Processes"
+    echo -e "  ${CYAN}0${NC}) Exit"
     echo "─────────────────────────────────────────────────────────────"
     echo ""
 }
@@ -440,6 +441,22 @@ install_deps() {
     print_ok "All dependencies installed"
 }
 
+# Run backend tests
+run_tests() {
+    if [ ! -d "$UV_ENV" ]; then
+        print_err "UV environment not found. Setting up..."
+        setup_uv_env
+        return
+    fi
+
+    print_msg "Running backend tests..."
+    cd "$BACKEND_DIR"
+    export UV_CACHE_DIR="$UV_CACHE"
+    "$UV_ENV/bin/python" -m pytest test_server.py -v
+
+    echo ""
+}
+
 # Wait for keypress
 wait_key() {
     echo ""
@@ -500,6 +517,10 @@ main() {
                 ;;
             9)
                 install_deps
+                wait_key
+                ;;
+            t|T)
+                run_tests
                 wait_key
                 ;;
             k|K)
