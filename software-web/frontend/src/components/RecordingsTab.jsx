@@ -162,6 +162,10 @@ function RecordingsTab() {
                     <span className="recording-samples">{rec.total_samples?.toLocaleString() || '--'} samples</span>
                     <span className="recording-size">{rec.size_kb} KB</span>
                   </div>
+                  <div className="recording-badges">
+                    {rec.channels && <span className="badge badge-channels">{rec.channels}ch</span>}
+                    {rec.has_video && <span className="badge badge-video">Video</span>}
+                  </div>
                   {rec.subject && <div className="recording-subject">{rec.subject}</div>}
                   <div className="recording-actions">
                     <button onClick={(e) => { e.stopPropagation(); downloadSession(rec.session_id) }}>⬇</button>
@@ -190,6 +194,7 @@ function RecordingsTab() {
                   <span><strong>Duration:</strong> {formatDuration(sessionData.metadata?.duration_s)}</span>
                   <span><strong>Samples:</strong> {sessionData.metadata?.total_samples?.toLocaleString()}</span>
                   <span><strong>Rate:</strong> {sessionData.metadata?.sample_rate} Hz</span>
+                  <span><strong>Channels:</strong> {sessionData.metadata?.channels || 8}</span>
                 </div>
                 {sessionData.metadata?.subject && (
                   <div className="session-subject">
@@ -202,6 +207,20 @@ function RecordingsTab() {
                   </div>
                 )}
               </div>
+
+              {/* Video player if recording has video */}
+              {sessionData.metadata?.has_video && (
+                <div className="session-video">
+                  <h4>Video Recording</h4>
+                  <video
+                    controls
+                    src={`${API_URL}/recordings/${selectedSession}/video`}
+                    className="video-player"
+                  >
+                    Your browser does not support video playback.
+                  </video>
+                </div>
+              )}
 
               {/* Channel selector */}
               <div className="channel-selector">

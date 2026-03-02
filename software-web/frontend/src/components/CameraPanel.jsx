@@ -131,6 +131,7 @@ function CameraPanel({ onCameraStatusChange }) {
       if (res.ok) {
         setCameraActive(true)
         setError(null)
+        onCameraStatusChangeRef.current?.(true, false)
       } else {
         setError('Failed to start camera')
       }
@@ -143,6 +144,8 @@ function CameraPanel({ onCameraStatusChange }) {
     try {
       await fetch(`${API_URL}/camera/stop`, { method: 'POST' })
       setCameraActive(false)
+      setCameraRecording(false)
+      onCameraStatusChangeRef.current?.(false, false)
     } catch (e) {
       setError('Failed to stop camera')
     }

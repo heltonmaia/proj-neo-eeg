@@ -61,6 +61,7 @@ recording_session_id: Optional[str] = None
 recording_start_time: Optional[float] = None
 recording_metadata: dict = {}
 recording_part: int = 0  # Current recording part (for rotation)
+recording_channels: List[int] = []  # Channels to record (0-7)
 RECORDINGS_DIR = Path(__file__).parent / "recordings"
 FLUSH_INTERVAL = 250  # Flush to disk every 250 samples (1 second)
 
@@ -403,9 +404,11 @@ class EEGProtocol(asyncio.DatagramProtocol):
                     stats["recording_samples"],
                     round(elapsed, 4),
                     packet['s'],
-                    *packet['c'],  # 8 channels
-                    *packet['a']   # 3 accel axes
                 ]
+                # Add only selected channels
+                for ch in recording_channels:
+                    row.append(packet['c'][ch])
+                row.extend(packet['a'])  # 3 accel axes
                 recording_file.writerow(row)
                 stats["recording_samples"] += 1
 
@@ -648,13 +651,23 @@ async def stop_streaming():
 
 
 @app.post("/record/start")
-async def start_recording(subject: str = "", notes: str = "", include_video: bool = True):
+async def start_recording(subject: str = "", notes: str = "", include_video: bool = True, channels: str = "0,1,2,3,4,5,6,7"):
     """Start recording EEG data to CSV file with metadata."""
     global recording_active, recording_file, recording_handle, recording_dir
     global recording_session_id, recording_start_time, recording_metadata, recording_part
+    global recording_channels
 
     if recording_active:
         return {"status": "error", "message": "Already recording"}
+
+    # Parse channels parameter (comma-separated indices)
+    try:
+        recording_channels = [int(ch.strip()) for ch in channels.split(',') if ch.strip()]
+        recording_channels = [ch for ch in recording_channels if 0 <= ch <= 7]
+        if not recording_channels:
+            recording_channels = list(range(8))
+    except ValueError:
+        recording_channels = list(range(8))
 
     # Create recordings directory
     RECORDINGS_DIR.mkdir(exist_ok=True)
@@ -673,13 +686,12 @@ async def start_recording(subject: str = "", notes: str = "", include_video: boo
     recording_handle = open(csv_path, 'w', newline='')
     recording_file = csv.writer(recording_handle)
 
-    # Write header
-    recording_file.writerow([
-        'sample_index', 'time_s', 'packet_num',
-        'ch1_uv', 'ch2_uv', 'ch3_uv', 'ch4_uv',
-        'ch5_uv', 'ch6_uv', 'ch7_uv', 'ch8_uv',
-        'accel_x', 'accel_y', 'accel_z'
-    ])
+    # Write header with only selected channels
+    header = ['sample_index', 'time_s', 'packet_num']
+    for ch in recording_channels:
+        header.append(f'ch{ch+1}_uv')
+    header.extend(['accel_x', 'accel_y', 'accel_z'])
+    recording_file.writerow(header)
 
     # Initialize metadata
     recording_start_time = time.time()
@@ -687,7 +699,8 @@ async def start_recording(subject: str = "", notes: str = "", include_video: boo
         "session_id": recording_session_id,
         "start_time": timestamp.isoformat(),
         "sample_rate": SAMPLE_RATE,
-        "channels": 8,
+        "channels": len(recording_channels),
+        "channel_indices": recording_channels,
         "subject": subject,
         "notes": notes,
         "markers": [],
@@ -843,16 +856,22 @@ async def get_recording(session_id: str):
         if csv_path.exists():
             with open(csv_path, 'r') as f:
                 reader = csv.DictReader(f)
+                # Get channel columns dynamically from header
+                fieldnames = reader.fieldnames
+                channel_cols = [col for col in fieldnames if col.endswith('_uv') and col.startswith('ch')]
+
                 for row in reader:
+                    # Read only available channels, pad with 0 for missing
+                    channels = [0.0] * 8
+                    for col in channel_cols:
+                        ch_idx = int(col[2]) - 1  # 'ch1_uv' -> 0
+                        if 0 <= ch_idx < 8:
+                            channels[ch_idx] = float(row[col])
+
                     data.append({
                         "sample": int(row['sample_index']),
                         "time": float(row['time_s']),
-                        "channels": [
-                            float(row['ch1_uv']), float(row['ch2_uv']),
-                            float(row['ch3_uv']), float(row['ch4_uv']),
-                            float(row['ch5_uv']), float(row['ch6_uv']),
-                            float(row['ch7_uv']), float(row['ch8_uv'])
-                        ]
+                        "channels": channels
                     })
 
         return {
@@ -902,6 +921,16 @@ async def download_recording(session_id: str):
         return FileResponse(csv_path, media_type="text/csv", filename=f"{session_id}.csv")
 
     return {"status": "error", "message": "Recording not found"}
+
+
+@app.get("/recordings/{session_id}/video")
+async def get_recording_video(session_id: str):
+    """Stream recording video file."""
+    video_path = RECORDINGS_DIR / session_id / "video.avi"
+    if video_path.exists():
+        return FileResponse(video_path, media_type="video/x-msvideo", filename=f"{session_id}.avi")
+
+    return JSONResponse(status_code=404, content={"status": "error", "message": "Video not found"})
 
 
 @app.delete("/recordings/{session_id}")

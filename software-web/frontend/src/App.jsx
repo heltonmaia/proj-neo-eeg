@@ -34,6 +34,8 @@ function App() {
   const [statusExpanded, setStatusExpanded] = useState(false)
   const [cameraActive, setCameraActive] = useState(false)
   const [cameraRecording, setCameraRecording] = useState(false)
+  const [recordSignals, setRecordSignals] = useState(true)
+  const [recordVideo, setRecordVideo] = useState(true)
 
   const wsRef = useRef(null)
   const recordingTimerRef = useRef(null)
@@ -210,8 +212,13 @@ function App() {
   }
 
   const handleStartRecording = async () => {
+    if (!recordSignals && !recordVideo) return
     try {
-      const res = await fetch(`${API_URL}/record/start`, { method: 'POST' })
+      const params = new URLSearchParams({
+        include_video: recordVideo && cameraActive ? 'true' : 'false',
+        channels: selectedChannels.join(',')
+      })
+      const res = await fetch(`${API_URL}/record/start?${params}`, { method: 'POST' })
       if (res.ok) {
         setRecording(true)
         setRecordingTime(0)
@@ -313,7 +320,7 @@ function App() {
   return (
     <div className="app">
       <header className="header">
-        <h1>Potyplex EEG</h1>
+        <h1>Potyplex EEG <span className="app-variant">(web)</span></h1>
         <div className="status-bar">
           <div className={`connection-status ${receiving ? 'connected' : wsConnected ? 'waiting' : 'disconnected'}`}>
             <span className="indicator" />
@@ -367,11 +374,33 @@ function App() {
               >
                 ✕ Clear
               </button>
-              <div className="btn-separator" />
+            </div>
+
+            <div className="recording-controls">
+              <div className="recording-options">
+                <label className={`rec-option ${recording ? 'disabled' : ''}`}>
+                  <input
+                    type="checkbox"
+                    checked={recordSignals}
+                    onChange={(e) => setRecordSignals(e.target.checked)}
+                    disabled={recording}
+                  />
+                  <span>Signals</span>
+                </label>
+                <label className={`rec-option ${recording ? 'disabled' : ''} ${!cameraActive ? 'unavailable' : ''}`}>
+                  <input
+                    type="checkbox"
+                    checked={recordVideo}
+                    onChange={(e) => setRecordVideo(e.target.checked)}
+                    disabled={recording}
+                  />
+                  <span>Video {!cameraActive && '(off)'}</span>
+                </label>
+              </div>
               {!recording ? (
                 <button
                   onClick={handleStartRecording}
-                  disabled={!receiving}
+                  disabled={!receiving || (!recordSignals && !recordVideo)}
                   className="btn btn-rec"
                 >
                   ● REC
@@ -385,20 +414,6 @@ function App() {
                 </button>
               )}
             </div>
-
-          </div>
-
-          <div className="channel-selector">
-            {Array(8).fill(null).map((_, i) => (
-              <label key={i} className={`channel-toggle ${selectedChannels.includes(i) ? 'active' : ''}`}>
-                <input
-                  type="checkbox"
-                  checked={selectedChannels.includes(i)}
-                  onChange={() => toggleChannel(i)}
-                />
-                CH{i + 1}
-              </label>
-            ))}
           </div>
 
           {/* Main content area with two columns */}
@@ -423,61 +438,127 @@ function App() {
               </div>
             </div>
 
-            {/* Right column: Camera + Status */}
+            {/* Right column: Camera + Quick Info */}
             <div className="side-column">
               {/* Camera Panel */}
               <CameraPanel onCameraStatusChange={handleCameraStatusChange} />
 
-              {/* System Status Panel */}
-              <div className="status-panel">
-                <div
-                  className="status-panel-header"
-                  onClick={() => setStatusExpanded(!statusExpanded)}
-                >
-                  <h3>
-                    <span>System Status</span>
-                  </h3>
-                  <span className={`toggle-icon ${statusExpanded ? 'expanded' : ''}`}>
-                    {statusExpanded ? '▲' : '▼'}
-                  </span>
+              {/* Quick Info Panel (always visible, compact) */}
+              <div className="quick-info-panel">
+                <div className="quick-stats">
+                  <div className="quick-stat">
+                    <span className="stat-value">{stats.samples.toLocaleString()}</span>
+                    <span className="stat-label">Samples</span>
+                  </div>
+                  <div className="quick-stat">
+                    <span className="stat-value">{stats.rate} Hz</span>
+                    <span className="stat-label">Rate</span>
+                  </div>
+                  <div className="quick-stat">
+                    <span className="stat-value">{config.sample_rate} Hz</span>
+                    <span className="stat-label">Target</span>
+                  </div>
                 </div>
-                <div className={`status-panel-content ${statusExpanded ? 'expanded' : ''}`}>
-                  <div className="status-stats">
-                    <div className="status-stat">
-                      <span className="stat-value">{stats.samples.toLocaleString()}</span>
-                      <span className="stat-label">Samples</span>
-                    </div>
-                    <div className="status-stat">
-                      <span className="stat-value">{stats.rate} Hz</span>
-                      <span className="stat-label">Rate</span>
-                    </div>
-                    <div className="status-stat">
-                      <span className="stat-value">{config.sample_rate} Hz</span>
-                      <span className="stat-label">Target</span>
-                    </div>
+                <div className="quick-indicators">
+                  <div className={`quick-indicator ${wsConnected ? 'ok' : 'error'}`}>
+                    <span className="dot"></span>
+                    <span>Backend</span>
                   </div>
-                  <div className="status-indicators">
-                    <div className="status-indicator">
+                  <div className={`quick-indicator ${receiving ? 'ok' : streaming ? 'warning' : 'off'}`}>
+                    <span className="dot"></span>
+                    <span>ESP32</span>
+                  </div>
+                  <div className={`quick-indicator ${cameraActive ? 'ok' : 'off'}`}>
+                    <span className="dot"></span>
+                    <span>Camera</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Channel selector in side panel */}
+              <div className="side-channel-selector">
+                <div className="side-channel-header">Channels</div>
+                <div className={`side-channel-grid ${recording ? 'locked' : ''}`}>
+                  {Array(8).fill(null).map((_, i) => (
+                    <label key={i} className={`side-channel-toggle ${selectedChannels.includes(i) ? 'active' : ''} ${recording ? 'disabled' : ''}`}>
+                      <input
+                        type="checkbox"
+                        checked={selectedChannels.includes(i)}
+                        onChange={() => toggleChannel(i)}
+                        disabled={recording}
+                      />
+                      <span>CH{i + 1}</span>
+                    </label>
+                  ))}
+                </div>
+                {recording && <span className="locked-indicator">🔒 Locked during recording</span>}
+              </div>
+            </div>
+          </div>
+
+          {/* System Console Panel (expandable, full width, below everything) */}
+          <div className="system-console">
+            <div
+              className="console-header"
+              onClick={() => setStatusExpanded(!statusExpanded)}
+            >
+              <h3>System Console</h3>
+              <span className={`toggle-icon ${statusExpanded ? 'expanded' : ''}`}>
+                {statusExpanded ? '▲' : '▼'}
+              </span>
+            </div>
+            <div className={`console-content ${statusExpanded ? 'expanded' : ''}`}>
+              <div className="console-columns">
+                {/* Left column: Connection Status & Details */}
+                <div className="console-column">
+                  <h4>Connection Status</h4>
+                  <div className="console-section">
+                    <div className="connection-detail">
                       <span className={`dot ${wsConnected ? 'green' : 'red'}`}></span>
-                      <span className="label">Backend:</span>
-                      <span className="value">{wsConnected ? 'Connected' : 'Disconnected'}</span>
+                      <span className="conn-label">Backend Server</span>
+                      <span className="conn-value">{wsConnected ? 'ws://localhost:8000' : 'Disconnected'}</span>
                     </div>
-                    <div className="status-indicator">
+                    <div className="connection-detail">
                       <span className={`dot ${receiving ? 'green' : streaming ? 'yellow' : 'gray'}`}></span>
-                      <span className="label">ESP32:</span>
-                      <span className="value">{receiving ? 'Receiving' : streaming ? 'Waiting' : 'Stopped'}</span>
+                      <span className="conn-label">ESP32 Device</span>
+                      <span className="conn-value">{receiving ? '192.168.4.1:12345' : streaming ? 'Waiting...' : 'Not streaming'}</span>
                     </div>
-                    <div className="status-indicator">
+                    <div className="connection-detail">
                       <span className={`dot ${cameraActive ? 'green' : 'gray'}`}></span>
-                      <span className="label">Camera:</span>
-                      <span className="value">{cameraActive ? (cameraRecording ? 'Recording' : 'Active') : 'Off'}</span>
+                      <span className="conn-label">Camera</span>
+                      <span className="conn-value">{cameraActive ? (cameraRecording ? 'Recording' : 'Active') : 'Inactive'}</span>
                     </div>
                   </div>
-                  <div className="log-entries">
+
+                  <h4>Statistics</h4>
+                  <div className="console-section stats-grid">
+                    <div className="stat-item">
+                      <span className="stat-name">Total Samples</span>
+                      <span className="stat-val">{stats.samples.toLocaleString()}</span>
+                    </div>
+                    <div className="stat-item">
+                      <span className="stat-name">Sample Rate</span>
+                      <span className="stat-val">{stats.rate} / {config.sample_rate} Hz</span>
+                    </div>
+                    <div className="stat-item">
+                      <span className="stat-name">Active Channels</span>
+                      <span className="stat-val">{selectedChannels.length} / 8</span>
+                    </div>
+                    <div className="stat-item">
+                      <span className="stat-name">Recording</span>
+                      <span className="stat-val">{recording ? `Active (${formatRecordingTime(recordingTime)})` : 'Stopped'}</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Right column: Event Log */}
+                <div className="console-column">
+                  <h4>Event Log</h4>
+                  <div className="console-log">
                     {systemLogs.length === 0 ? (
                       <div className="log-empty">No events recorded</div>
                     ) : (
-                      [...systemLogs].reverse().slice(0, 20).map((log, idx) => (
+                      [...systemLogs].reverse().slice(0, 30).map((log, idx) => (
                         <div key={idx} className={`log-entry ${log.level}`}>
                           <span className="log-time">{formatLogTime(log.time)}</span>
                           <span className="log-event">{log.event}</span>
