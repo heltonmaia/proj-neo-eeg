@@ -29,6 +29,7 @@ proj-neo-eeg/
 │       └── PotyEEG_v9/         # Eagle PCB files
 │
 ├── software-web/               # Web application (recommended)
+│   ├── run.py                  # Cross-platform launcher
 │   ├── backend/                # FastAPI server
 │   └── frontend/               # React application
 │
@@ -55,10 +56,10 @@ proj-neo-eeg/
 
 ```bash
 cd software-web
-./run.sh
+python run.py
 ```
 
-Open http://localhost:3000
+Select option `1` to start all services, then open http://localhost:3000
 
 ### 4. Use
 
@@ -75,6 +76,7 @@ Open http://localhost:3000
 - Offline recording playback
 - Dark/Light theme
 - Channel selection and zoom controls
+- Cross-platform (Linux, Windows, macOS)
 
 ## Firmware
 
@@ -85,7 +87,7 @@ The ESP32 firmware streams OpenBCI-compatible packets:
 - **Channels**: 8 (ADS1299)
 - **Transport**: UDP over WiFi
 
-## Dependencies
+## Requirements
 
 ### Firmware
 - Arduino IDE 2.x

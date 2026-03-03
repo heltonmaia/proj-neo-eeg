@@ -23,6 +23,7 @@ Real-time EEG visualization and recording using FastAPI + React.
 - Recording (signals, video, or both)
 - Offline recording playback
 - Dark/Light theme
+- Cross-platform (Linux, Windows, macOS)
 
 ## Requirements
 
@@ -34,14 +35,17 @@ Real-time EEG visualization and recording using FastAPI + React.
 ## Quick Start
 
 ```bash
-./run.sh
+python run.py
 ```
 
-Or manually:
+This opens an interactive menu to start/stop services, run tests, and more.
+
+## Manual Start
 
 ```bash
 # Terminal 1 - Backend
 cd backend
+pip install -r requirements.txt
 uvicorn server:app --reload --host 0.0.0.0 --port 8000
 
 # Terminal 2 - Frontend
@@ -53,10 +57,30 @@ npm run dev
 ## Usage
 
 1. Connect to ESP32 WiFi: `Potyplex-EEG` (password: `eeg12345`)
-2. Open http://localhost:3000
-3. Click **Start** to begin EEG streaming
-4. Click **Start Camera** to enable video
-5. Select checkboxes and click **REC** to record
+2. Run `python run.py` and select "Start All"
+3. Open http://localhost:3000
+4. Click **Start** to begin EEG streaming
+5. Click **Start Camera** to enable video (optional)
+6. Select **Signals** and/or **Video** checkboxes
+7. Click **REC** to record
+
+## Menu Options
+
+| Key | Action |
+|-----|--------|
+| 1 | Start All (backend + frontend) |
+| 2 | Stop All |
+| 3 | Restart All |
+| 4 | Start Backend only |
+| 5 | Stop Backend |
+| 6 | Stop Frontend |
+| 7 | View Backend Logs |
+| 8 | View Frontend Logs |
+| 9 | Install Dependencies |
+| t | Run Tests |
+| s | Setup Python Environment |
+| k | Kill Stale Processes |
+| 0 | Exit |
 
 ## API Endpoints
 
@@ -80,21 +104,22 @@ npm run dev
 
 ```
 software-web/
+├── run.py             # Cross-platform service manager
 ├── backend/
-│   ├── server.py          # FastAPI server
-│   ├── requirements.txt   # Python dependencies
-│   └── recordings/        # Saved recordings
+│   ├── server.py      # FastAPI server
+│   ├── test_server.py # Backend tests (20 tests)
+│   ├── requirements.txt
+│   └── recordings/    # Saved recordings
 ├── frontend/
 │   ├── src/
-│   │   ├── App.jsx        # Main component
-│   │   ├── App.css        # Styles
+│   │   ├── App.jsx
+│   │   ├── App.css
 │   │   └── components/
-│   │       ├── EEGChart.jsx       # EEG visualization
-│   │       ├── CameraPanel.jsx    # Camera controls
-│   │       └── RecordingsTab.jsx  # Recording viewer
+│   │       ├── EEGChart.jsx
+│   │       ├── CameraPanel.jsx
+│   │       └── RecordingsTab.jsx
 │   ├── package.json
 │   └── vite.config.js
-├── run.sh                 # Quick start script
 └── README.md
 ```
 
@@ -106,26 +131,17 @@ Recordings are stored in `backend/recordings/YYYYMMDD_HHMMSS/`:
 - `data.csv` - EEG signals (if recorded)
 - `video.mp4` - Camera video (if recorded)
 
-## Data Protocol
+## Testing
 
-### UDP (ESP32 → Backend)
+Run backend tests:
+```bash
+python run.py  # then press 't'
+```
 
-OpenBCI packet (33 bytes):
-- Byte 0: Header (0xA0)
-- Byte 1: Sample number
-- Bytes 2-25: 8 channels (3 bytes each, 24-bit signed)
-- Bytes 26-31: Accelerometer
-- Byte 32: Footer (0xC0)
-
-### WebSocket (Backend → Frontend)
-
-```json
-{
-  "type": "batch",
-  "samples": [
-    {"s": 1, "c": [1.2, -3.4, ...], "a": [100, -50, 980]}
-  ]
-}
+Or directly:
+```bash
+cd backend
+pytest test_server.py -v
 ```
 
 ## Troubleshooting
@@ -138,6 +154,6 @@ OpenBCI packet (33 bytes):
 - Check USB camera is connected
 - Verify OpenCV is installed: `pip install opencv-python`
 
-**Video not playing:**
-- Recordings use MP4 format (mp4v codec)
-- Supported by all modern browsers
+**Services won't start:**
+- Press 'k' to kill stale processes
+- Check logs with options 7/8

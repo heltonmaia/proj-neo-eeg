@@ -23,16 +23,16 @@ Data flow:
 
 ### Web Application (software-web/)
 
-**Quick start with interactive menu:**
+**Quick start (cross-platform menu):**
 ```bash
-cd software-web
-./run.sh
+python run.py
 ```
 
 **Manual start:**
 ```bash
-# Backend (requires UV environment)
+# Backend
 cd software-web/backend
+pip install -r requirements.txt
 uvicorn server:app --reload --host 0.0.0.0 --port 8000
 
 # Frontend
@@ -122,3 +122,10 @@ Recording options:
 - **Signals only**: Records EEG data to CSV
 - **Video only**: Records camera to MP4
 - **Both**: Records signals and video simultaneously
+
+## Testing
+
+Backend tests are located in `software-web/backend/test_server.py` (20 tests covering packet parser, API endpoints, recording logic, and WebSocket).
+
+Run via menu: `python run.py` → option `t`
+Or directly: `pytest test_server.py -v`
