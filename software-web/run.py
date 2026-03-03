@@ -3,6 +3,8 @@
 Potyplex EEG - Service Manager (Interactive Menu)
 Cross-platform script for Linux, Windows, and macOS.
 
+Supports both UV and standard Python venv environments.
+
 Usage: python run.py
 """
 
@@ -27,6 +29,13 @@ BACKEND_PID_FILE = PID_DIR / "potyplex-backend.pid"
 FRONTEND_PID_FILE = PID_DIR / "potyplex-frontend.pid"
 BACKEND_LOG = PID_DIR / "potyplex-backend.log"
 FRONTEND_LOG = PID_DIR / "potyplex-frontend.log"
+
+# Known UV environment locations (add your custom paths here)
+UV_KNOWN_PATHS = [
+    Path("/mnt/hd3/uv-common/uv-eeg"),  # Custom UV environment
+    Path.home() / ".local/share/uv/envs/uv-eeg",  # Default UV location
+    Path.home() / ".uv/envs/uv-eeg",  # Alternative UV location
+]
 
 # Colors (ANSI escape codes)
 class Colors:
@@ -225,14 +234,79 @@ def check_npm():
     return shutil.which("npm")
 
 
+def check_uv():
+    """Check if UV is installed."""
+    return shutil.which("uv")
+
+
+def is_uv_environment(venv_path):
+    """Check if a path is a UV-managed environment."""
+    # UV environments typically have a pyvenv.cfg with uv info
+    pyvenv_cfg = venv_path / "pyvenv.cfg"
+    if pyvenv_cfg.exists():
+        try:
+            content = pyvenv_cfg.read_text()
+            return "uv" in content.lower()
+        except Exception:
+            pass
+    # Also check if it's in a known UV location
+    for known_path in UV_KNOWN_PATHS:
+        if venv_path == known_path or str(venv_path).startswith(str(known_path.parent)):
+            return True
+    return False
+
+
+def find_uv_environment():
+    """Search for existing UV environments."""
+    for path in UV_KNOWN_PATHS:
+        # Check if path itself is a venv
+        py = path / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+        if py.exists():
+            return path
+        # Check if path contains a .venv subdirectory (UV project structure)
+        venv_subdir = path / ".venv"
+        py_sub = venv_subdir / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+        if py_sub.exists():
+            return venv_subdir
+    return None
+
+
 def setup_venv(config):
-    """Setup Python virtual environment."""
+    """Setup Python virtual environment (UV or standard venv)."""
     clear_screen()
     print(f"{Colors.CYAN}")
     print("╔═══════════════════════════════════════════════════════════╗")
     print("║              Python Environment Setup                     ║")
     print("╚═══════════════════════════════════════════════════════════╝")
     print(f"{Colors.NC}")
+
+    has_uv = check_uv()
+    use_uv = False
+
+    # Check for existing UV environment first
+    existing_uv = find_uv_environment()
+    if existing_uv:
+        print(f"\n{Colors.GREEN}Found existing UV environment:{Colors.NC} {existing_uv}")
+        use_it = input("Use this environment? (Y/n): ").strip().lower()
+        if use_it != 'n':
+            config["venv_path"] = str(existing_uv)
+            config["use_uv"] = True
+            save_config(config)
+            print_ok(f"Configuration saved to {CONFIG_FILE}")
+            input("\nPress Enter to continue...")
+            return
+
+    # Choose environment type
+    if has_uv:
+        print(f"\n{Colors.BOLD}UV detected! Which environment type do you want to use?{Colors.NC}\n")
+        print(f"  {Colors.CYAN}1{Colors.NC}) UV (recommended - faster installs)")
+        print(f"  {Colors.CYAN}2{Colors.NC}) Standard Python venv")
+        print()
+        env_choice = input("Select option (1-2): ").strip()
+        use_uv = env_choice != "2"
+    else:
+        print(f"\n{Colors.YELLOW}UV not found.{Colors.NC} Using standard Python venv.")
+        print(f"  Tip: Install UV for faster dependency management: {Colors.CYAN}pip install uv{Colors.NC}")
 
     print(f"\n{Colors.BOLD}Where do you want to create the virtual environment?{Colors.NC}\n")
     print(f"  {Colors.CYAN}1{Colors.NC}) Project folder: {SCRIPT_DIR / '.venv'}")
@@ -256,8 +330,12 @@ def setup_venv(config):
 
     # Create venv
     try:
-        subprocess.run([sys.executable, "-m", "venv", str(venv_path)], check=True)
-        print_ok("Virtual environment created")
+        if use_uv:
+            subprocess.run(["uv", "venv", str(venv_path)], check=True)
+            print_ok("UV virtual environment created")
+        else:
+            subprocess.run([sys.executable, "-m", "venv", str(venv_path)], check=True)
+            print_ok("Virtual environment created")
     except subprocess.CalledProcessError:
         print_err("Failed to create virtual environment")
         input("\nPress Enter to continue...")
@@ -265,15 +343,20 @@ def setup_venv(config):
 
     # Save config
     config["venv_path"] = str(venv_path)
+    config["use_uv"] = use_uv
     save_config(config)
 
     # Install dependencies
     print()
     print_msg("Installing backend dependencies...")
-    pip = get_pip_executable(config)
     try:
-        subprocess.run([str(pip), "install", "-r", str(BACKEND_DIR / "requirements.txt")],
-                      check=True)
+        if use_uv:
+            subprocess.run(["uv", "pip", "install", "-r", str(BACKEND_DIR / "requirements.txt"),
+                           "--python", str(get_python_executable(config))], check=True)
+        else:
+            pip = get_pip_executable(config)
+            subprocess.run([str(pip), "install", "-r", str(BACKEND_DIR / "requirements.txt")],
+                          check=True)
         print_ok("Dependencies installed")
     except subprocess.CalledProcessError:
         print_err("Failed to install dependencies")
@@ -284,24 +367,38 @@ def setup_venv(config):
 
 def check_environment(config):
     """Check if environment is ready, setup if needed."""
-    venv = get_venv_path(config)
-    python = get_python_executable(config)
+    # If config already has a valid venv_path, use it
+    if config.get("venv_path"):
+        venv = get_venv_path(config)
+        python = get_python_executable(config)
+        if venv.exists() and python.exists():
+            return True
 
-    if venv.exists() and python.exists():
+    # PRIORITY 1: Check known UV environment locations first
+    uv_env = find_uv_environment()
+    if uv_env:
+        config["venv_path"] = str(uv_env)
+        config["use_uv"] = True
+        save_config(config)
+        print_ok(f"Found UV environment: {uv_env}")
+        time.sleep(1)
         return True
 
-    # Check known locations
+    # PRIORITY 2: Check standard venv locations
     known_paths = [
         SCRIPT_DIR / ".venv",
         SCRIPT_DIR.parent / ".venv",
+        BACKEND_DIR / ".venv",
     ]
 
     for path in known_paths:
         py = path / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
         if py.exists():
             config["venv_path"] = str(path)
+            config["use_uv"] = is_uv_environment(path)
             save_config(config)
-            print_msg(f"Found existing environment: {path}")
+            env_type = "UV" if config.get("use_uv") else "venv"
+            print_ok(f"Found existing {env_type} environment: {path}")
             time.sleep(1)
             return True
 
@@ -492,8 +589,14 @@ def install_deps(config):
         return
 
     print_msg("Installing backend dependencies...")
-    pip = get_pip_executable(config)
-    subprocess.run([str(pip), "install", "-r", str(BACKEND_DIR / "requirements.txt")])
+    use_uv = config.get("use_uv", False) and check_uv()
+
+    if use_uv:
+        subprocess.run(["uv", "pip", "install", "-r", str(BACKEND_DIR / "requirements.txt"),
+                       "--python", str(get_python_executable(config))])
+    else:
+        pip = get_pip_executable(config)
+        subprocess.run([str(pip), "install", "-r", str(BACKEND_DIR / "requirements.txt")])
 
     print_msg("Installing frontend dependencies...")
     subprocess.run(["npm", "install"], cwd=str(FRONTEND_DIR))
@@ -533,8 +636,10 @@ def print_menu(config):
     clear_screen()
 
     venv = get_venv_path(config)
+    use_uv = config.get("use_uv", False)
+    env_type = "UV" if use_uv else "venv"
     venv_status = f"{Colors.GREEN}● OK{Colors.NC}" if venv.exists() else f"{Colors.RED}● Not found{Colors.NC}"
-    venv_name = venv.parent.name if venv.exists() else "none"
+    venv_name = venv.name if venv.exists() else "none"
 
     print(f"{Colors.CYAN}")
     print("╔═══════════════════════════════════════════════════════════╗")
@@ -547,7 +652,7 @@ def print_menu(config):
     print("─" * 60)
     print(f"  Backend:  {get_status(BACKEND_PID_FILE)}")
     print(f"  Frontend: {get_status(FRONTEND_PID_FILE)}")
-    print(f"  Python:   {venv_status} {Colors.CYAN}{venv_name}{Colors.NC}")
+    print(f"  Python:   {venv_status} ({env_type}) {Colors.CYAN}{venv_name}{Colors.NC}")
     print("─" * 60)
     print()
 

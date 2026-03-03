@@ -25,12 +25,23 @@ Data flow:
 
 **Quick start (cross-platform menu):**
 ```bash
+cd software-web
 python run.py
 ```
 
+The launcher supports both **UV** and **standard Python venv**:
+- Automatically detects existing UV environments
+- Falls back to standard venv if UV is not available
+- Cross-platform: Linux, Windows, macOS
+
 **Manual start:**
 ```bash
-# Backend
+# Backend (with UV)
+cd software-web/backend
+uv pip install -r requirements.txt
+uvicorn server:app --reload --host 0.0.0.0 --port 8000
+
+# Backend (without UV)
 cd software-web/backend
 pip install -r requirements.txt
 uvicorn server:app --reload --host 0.0.0.0 --port 8000

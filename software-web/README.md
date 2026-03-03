@@ -31,6 +31,7 @@ Real-time EEG visualization and recording using FastAPI + React.
 - Node.js 18+
 - OpenCV (for camera support)
 - Modern browser (Chrome, Firefox, Edge)
+- UV (optional, recommended for faster dependency management)
 
 ## Quick Start
 
@@ -40,10 +41,20 @@ python run.py
 
 This opens an interactive menu to start/stop services, run tests, and more.
 
+**Environment Support:**
+- Automatically detects existing UV environments
+- Falls back to standard Python venv if UV is not available
+- Saves environment configuration in `.env.local.json`
+
 ## Manual Start
 
 ```bash
-# Terminal 1 - Backend
+# Terminal 1 - Backend (with UV)
+cd backend
+uv pip install -r requirements.txt
+uvicorn server:app --reload --host 0.0.0.0 --port 8000
+
+# Terminal 1 - Backend (without UV)
 cd backend
 pip install -r requirements.txt
 uvicorn server:app --reload --host 0.0.0.0 --port 8000
