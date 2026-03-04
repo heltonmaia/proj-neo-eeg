@@ -12,6 +12,7 @@ import asyncio
 import base64
 import csv
 import json
+import ffmpeg
 import os
 import time
 import threading
@@ -73,6 +74,9 @@ camera_writer: Optional[cv2.VideoWriter] = None
 camera_clients: Set[WebSocket] = set()
 camera_frame_count = 0
 camera_lock = threading.Lock()
+
+# ffmpeg process
+ffmpeg_process = None
 
 # Statistics
 stats = {
@@ -220,7 +224,7 @@ def get_camera_frame() -> Optional[bytes]:
 
 def start_camera_recording(output_path: Path, fps: int = 15) -> bool:
     """Start recording video to file."""
-    global camera_writer, camera_recording
+    global camera_writer, camera_recording, ffmpeg_process
 
     if not camera_active or camera_capture is None:
         return False
@@ -228,6 +232,28 @@ def start_camera_recording(output_path: Path, fps: int = 15) -> bool:
     with camera_lock:
         width = int(camera_capture.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(camera_capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps = int((camera_capture.get(cv2.CAP_PROP_FPS)))
+
+        ffmpeg_process = (
+            ffmpeg
+            .input(
+                'pipe:',
+                format='rawvideo',
+                pix_fmt='bgr24',
+                s=f'{width}x{height}',
+                r=fps
+                )
+            .output(
+                str(output_path),
+                vcodec='libx264',
+                pix_fmt='yuv420p',
+                preset='veryfast',
+                crf=23,
+                # movflags='+faststart'
+            )
+            .overwrite_output()
+            .run_async(pipe_stdin=True)
+        )
 
         # Use mp4v codec for MP4 format (browser compatible)
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
@@ -245,7 +271,7 @@ def start_camera_recording(output_path: Path, fps: int = 15) -> bool:
 
 def stop_camera_recording():
     """Stop video recording."""
-    global camera_writer, camera_recording
+    global camera_writer, camera_recording, ffmpeg_process
 
     with camera_lock:
         if camera_writer is not None:
@@ -253,11 +279,15 @@ def stop_camera_recording():
             camera_writer = None
         camera_recording = False
         stats["camera_recording"] = False
+        ffmpeg_process.stdin.close()
+        ffmpeg_process.wait()
         add_log("Video recording stopped")
 
 
 def write_camera_frame():
     """Write current frame to video file if recording."""
+    global ffmpeg_process
+
     if not camera_recording or camera_writer is None or camera_capture is None:
         return
 
@@ -265,6 +295,7 @@ def write_camera_frame():
         ret, frame = camera_capture.read()
         if ret:
             camera_writer.write(frame)
+            ffmpeg_process.stdin.write(frame.tobytes())
 
 
 def check_recording_rotation() -> bool:

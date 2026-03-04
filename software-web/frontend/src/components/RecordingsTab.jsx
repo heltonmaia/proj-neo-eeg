@@ -218,6 +218,7 @@ function RecordingsTab() {
                     controls
                     className="video-player"
                     src={`${API_URL}/recordings/${selectedSession}/video`}
+                    type="video/mp4"
                   >
                     Your browser does not support video playback.
                   </video>
